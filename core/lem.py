@@ -1,0 +1,168 @@
+"""
+Bishop's Simplified Method (limit equilibrium) for benched OB dump slopes.
+
+A fully vectorised circular-slip search written from scratch for this project,
+so that every synthetic FOS used to train the ML surrogate is traceable to a
+documented physical calculation (not to an empirical "FOS adjustment formula").
+
+Coordinate system
+-----------------
+Toe of the dump at (0, 0). The dump rises to the right; the slide mass moves
+to the left (down-slope). Foundation (y < 0) is treated as competent, so slip
+surfaces that would dip below the base are clipped to slide along the base
+(composite surface) - the usual assumption for dumps on firm ground.
+
+Pore pressure is represented by the pore-pressure ratio r_u = u / (gamma * h)
+(Bishop & Morgenstern, 1960).
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+import numpy as np
+
+
+# ---------------------------------------------------------------- geometry
+@dataclass
+class DumpGeometry:
+    n_decks: int = 3
+    deck_height: float = 30.0      # m, height of one deck (bench)
+    deck_angle: float = 32.0       # deg, face angle of one deck
+    berm_width: float = 30.0       # m, width of berm between decks
+
+    @property
+    def height(self) -> float:
+        return self.n_decks * self.deck_height
+
+    @property
+    def horizontal_extent(self) -> float:
+        face = self.deck_height / np.tan(np.radians(self.deck_angle))
+        return self.n_decks * face + (self.n_decks - 1) * self.berm_width
+
+    @property
+    def overall_angle(self) -> float:
+        return float(np.degrees(np.arctan(self.height / self.horizontal_extent)))
+
+    def surface(self) -> tuple[np.ndarray, np.ndarray]:
+        """Polyline of the ground surface (x, y), toe at origin."""
+        face = self.deck_height / np.tan(np.radians(self.deck_angle))
+        xs, ys = [-3.0 * self.height - 50.0, 0.0], [0.0, 0.0]
+        x, y = 0.0, 0.0
+        for i in range(self.n_decks):
+            x += face
+            y += self.deck_height
+            xs.append(x); ys.append(y)
+            if i < self.n_decks - 1:
+                x += self.berm_width
+                xs.append(x); ys.append(y)
+        xs.append(x + 3.0 * self.height + 50.0); ys.append(y)
+        return np.array(xs), np.array(ys)
+
+    def cols(self) -> dict:
+        """Geometry columns expected by the ML model."""
+        return dict(H_m=self.height, beta_overall_deg=self.overall_angle,
+                    deck_angle_deg=self.deck_angle, n_decks=self.n_decks,
+                    deck_height_m=self.deck_height, berm_width_m=self.berm_width)
+
+    @staticmethod
+    def from_overall(height: float, overall_angle: float) -> "DumpGeometry":
+        """Single uniform slope when only overall H and beta are known."""
+        return DumpGeometry(n_decks=1, deck_height=height,
+                            deck_angle=overall_angle, berm_width=0.0)
+
+
+# ---------------------------------------------------------------- solver
+@dataclass
+class BishopResult:
+    fos: float
+    xc: float
+    yc: float
+    radius: float
+    x_exit: float
+    n_circles: int
+
+
+def _bishop_batch(xc, yc, R, x_exit, xg, yg_fun, c, phi, gamma, ru, n_x=140):
+    """FOS of many circles at once. Returns array of FOS (inf where invalid)."""
+    M = xc.size
+    tanphi = np.tan(np.radians(phi))
+    # x-sampling per circle: from exit point to right edge of circle
+    t = (np.arange(n_x) + 0.5) / n_x
+    x_lo = x_exit[:, None]
+    x_hi = (xc + R)[:, None]
+    X = x_lo + (x_hi - x_lo) * t[None, :]
+    dx = ((x_hi - x_lo) / n_x)            # (M,1)
+    dxc = X - xc[:, None]
+    inside = np.abs(dxc) < R[:, None]
+    root = np.sqrt(np.clip(R[:, None] ** 2 - dxc ** 2, 1e-9, None))
+    ys = yc[:, None] - root
+    alpha = np.arctan(dxc / root)
+    below = ys < 0.0                      # clip to firm base
+    ys = np.where(below, 0.0, ys)
+    alpha = np.where(below, 0.0, alpha)
+    yg = yg_fun(X)
+    h = yg - ys
+    valid = inside & (h > 0)
+    h = np.where(valid, h, 0.0)
+    W = gamma * h * dx
+    u_b = ru * gamma * h * dx             # pore force on slice base (u * b)
+    drive = np.sum(W * np.sin(alpha), axis=1)
+    cb = np.where(valid, c * dx, 0.0)
+    num_const = cb + (W - u_b).clip(min=0) * tanphi
+    ok = (drive > 1e-6) & (h.max(axis=1) > 0.5)
+    F = np.full(M, 1.5)
+    cos_a, tan_a = np.cos(alpha), np.tan(alpha)
+    for _ in range(40):
+        m_alpha = cos_a * (1.0 + tan_a * tanphi / F[:, None])
+        m_alpha = np.clip(m_alpha, 0.2, None)     # standard numerical guard
+        F_new = np.sum(num_const / m_alpha, axis=1) / np.where(ok, drive, 1.0)
+        F_new = np.where(ok, F_new, np.inf)
+        diff = np.abs(F_new[ok] - F[ok]) if ok.any() else np.zeros(1)
+        if diff.max(initial=0.0) < 1e-4:
+            F = F_new
+            break
+        F = np.where(ok, F_new, np.inf)
+    return F
+
+
+def bishop_fos(geom: DumpGeometry, c: float, phi: float, gamma: float,
+               ru: float = 0.0, fine: bool = True) -> BishopResult:
+    """Minimum Bishop FOS over a two-stage grid search of circular surfaces."""
+    xs, ys_ = geom.surface()
+    yg_fun = lambda X: np.interp(X, xs, ys_)
+    H, L = geom.height, geom.horizontal_extent
+
+    def search(xc_rng, yc_rng, xe_rng, n_c, n_e):
+        XC, YC, XE = np.meshgrid(np.linspace(*xc_rng, n_c),
+                                 np.linspace(*yc_rng, n_c),
+                                 np.linspace(*xe_rng, n_e), indexing="ij")
+        XC, YC, XE = XC.ravel(), YC.ravel(), XE.ravel()
+        R = np.hypot(XC - XE, YC - yg_fun(XE))
+        keep = YC > yg_fun(XE) + 1.0
+        XC, YC, XE, R = XC[keep], YC[keep], XE[keep], R[keep]
+        F = _bishop_batch(XC, YC, R, XE, xs, yg_fun, c, phi, gamma, ru)
+        i = int(np.argmin(F))
+        return F[i], XC[i], YC[i], R[i], XE[i], F.size
+
+    # exit points: from in front of the toe up to 2/3 of the profile length
+    stage1 = search((-0.4 * L, 1.1 * L), (0.4 * H, 2.5 * H + 0.5 * L),
+                    (-0.25 * H, 0.66 * L), 22 if fine else 14, 12 if fine else 8)
+    F, xc, yc, R, xe, n = stage1
+    if fine and np.isfinite(F):
+        dx, dy, de = 0.12 * L + 5, 0.25 * H + 5, 0.08 * L + 3
+        F2, xc2, yc2, R2, xe2, n2 = search((xc - dx, xc + dx), (max(yc - dy, 1), yc + dy),
+                                           (xe - de, xe + de), 14, 7)
+        n += n2
+        if F2 < F:
+            F, xc, yc, R, xe = F2, xc2, yc2, R2, xe2
+    return BishopResult(float(F), float(xc), float(yc), float(R), float(xe), int(n))
+
+
+def slip_arc(res: BishopResult, geom: DumpGeometry, n=200):
+    """Coordinates of the critical slip surface for plotting."""
+    xs, ys_ = geom.surface()
+    X = np.linspace(res.x_exit, res.xc + res.radius, n)
+    Y = res.yc - np.sqrt(np.clip(res.radius ** 2 - (X - res.xc) ** 2, 0, None))
+    Y = np.maximum(Y, 0.0)
+    G = np.interp(X, xs, ys_)
+    m = Y <= G + 1e-6
+    return X[m], Y[m]
