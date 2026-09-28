@@ -13,6 +13,7 @@ COLS = dict(mine=None, subsidiary=None, region=None, material="coal OB", c_kPa=n
             H_m=nan, beta_overall_deg=nan, moisture_pct=nan, r_u=nan, FOS=nan, fos_method=None,
             status="partial", use_for_training=False, source=None, notes="")
 def add(**k):
+    k.pop("notes_geom", None)
     r = dict(COLS); r.update(k); rows.append(r)
 
 # ---------------------------------------------------------------- SECL (8)
@@ -55,13 +56,14 @@ for a, fos in [(43, .80), (41, .82), (39, .87), (37, .92), (35, .94), (33, 1.00)
         c_kPa=88.6, phi_deg=24.6, gamma_kNm3=24.4, n_decks=1, deck_height_m=75, berm_width_m=0,
         deck_angle_deg=a, H_m=75, r_u=0.0, FOS=fos, fos_method="FEM shear-strength reduction",
         status="complete", use_for_training=True, source=KA,
-        notes="Mean peak strength of 6 samples tested at 30% saturation; residual c 36.5 kPa, phi 21.5 deg. "
-              "43 deg row is the actual failure (back-analysed SRF 0.8)")
+        notes="Source analyses the dump as a single 75 m overall slope (internal dump). Mean peak strength of "
+              "6 samples at 30% saturation; residual c 36.5 kPa, phi 21.5 deg. 43 deg row = actual failure (SRF 0.8)")
 for H, fos in [(80, 1.26), (85, 1.22), (90, 1.22), (95, 1.20)]:
     add(mine=f"WCL internal dump, Wardha Valley ({H} m, 25 deg)", subsidiary="WCL", region="Maharashtra",
         c_kPa=88.6, phi_deg=24.6, gamma_kNm3=24.4, n_decks=1, deck_height_m=H, berm_width_m=0,
         deck_angle_deg=25, H_m=H, r_u=0.0, FOS=fos, fos_method="FEM shear-strength reduction",
-        status="complete", use_for_training=True, source=KA, notes="Height sensitivity at 25 deg")
+        status="complete", use_for_training=True, source=KA,
+        notes="Height sensitivity at 25 deg; source analyses a single overall slope")
 
 # ---------------------------------------------------------------- partial / excluded coal cases
 add(mine="Lakhanpur OCP", subsidiary="MCL", region="Odisha", c_kPa=90.7, phi_deg=25.17,
@@ -74,6 +76,7 @@ JY = ("Sharma S., Roy I. (2015) Slope failure of waste rock dump at Jayant openc
 add(mine="Jayant OCP dragline dump (pre-failure 2008)", subsidiary="NCL", region="Madhya Pradesh",
     c_kPa=75, phi_deg=25, gamma_kNm3=20.0, n_decks=1, deck_height_m=85, H_m=85, FOS=0.94,
     fos_method="LEM (Fellenius/Bishop, with water table and interface)", status="excluded",
+    notes_geom="dragline dump - a single high spoil heap as analysed in the source",
     source=JY, notes="Failure controlled by weak submerged interface (c 40 kPa, phi 21 deg) and seepage - "
                      "mechanisms not in model features; gamma ~20 kN/m3 approximate; overall angle to confirm")
 add(mine="Jayant OCP dragline dump (recommended profile)", subsidiary="NCL", region="Madhya Pradesh",
@@ -99,7 +102,7 @@ for a, fos in [(28, 4.47), (32, 2.48), (34, 1.67), (36, 1.33)]:
     add(mine=f"Coal mine OB + 20% fly ash dump (60 m, {a} deg)", subsidiary="not named", region="India",
         material="coal OB + 20% fly ash", n_decks=1, deck_height_m=60, deck_angle_deg=a, H_m=60,
         beta_overall_deg=a, FOS=fos, fos_method="FLAC/Slope (FDM-SRM)", source=PR,
-        notes="Material strengths not given in the text - take from the paper's property table")
+        notes="Source models a single unbenched 60 m slope; material strengths in the paper's property table")
 MM = "Geete et al. - Stability analysis of OB dump slope, Marki Mangli-I coal mine, IGC 2021 (Springer 2023)"
 for ch, state, fos in [(450, "existing", 1.77), (450, "extended", 1.37), (550, "existing", 1.60), (550, "extended", 1.45)]:
     add(mine=f"Marki Mangli-I (ch {ch} m, {state})", subsidiary="captive block (verify)", region="Maharashtra",
@@ -119,14 +122,16 @@ add(mine="Jambad OCP", subsidiary="ECL", region="West Bengal", phi_deg=35.0, dec
 DH = "Kumar A. et al. (2026) Probabilistic slope stability of variably saturated OB dump slopes, Sci Rep 16:1791"
 for state, ru, fos in [("dry", 0.0, 1.106), ("saturated flow", nan, 1.076)]:
     add(mine=f"Dhanbad OB dumps ({state})", subsidiary="BCCL area", region="Jharkhand", c_kPa=2.44,
-        phi_deg=34.5, n_decks=1, deck_height_m=60, H_m=60, r_u=ru, FOS=fos, fos_method="FELA upper bound",
-        source=DH, notes="Slope angle between 25-35 deg - check Fig. 5; unit weight not stated")
+        phi_deg=34.5, H_m=60, r_u=ru, FOS=fos, fos_method="FELA upper bound",
+        source=DH, notes="Total height 60 m; bench layout, slope angle (25-35 deg range) and unit weight "
+                         "not stated - check Fig. 5")
 for H, a in [(80, 36), (87, 35)]:
     add(mine=f"Amlohri OCP internal dump ({H} m, {a} deg)", subsidiary="NCL", region="Madhya Pradesh",
-        n_decks=1, deck_height_m=H, deck_angle_deg=a, H_m=H, beta_overall_deg=a, FOS=1.20,
+        H_m=H, beta_overall_deg=a, FOS=1.20,
         fos_method="LEM (Fellenius/Bishop) design target",
         source="Stability analysis of overburden internal dump material of Amlohri opencast coal mine, India",
-        notes="Profiles recommended for FOS 1.2 with 15 m water table - add material strength")
+        notes="Total height and overall angle of recommended profile (FOS 1.2, 15 m water table); "
+              "bench layout and material strength not stated")
 
 df = pd.DataFrame(rows)
 # study = who analysed it with which software; the model learns one correction per study
@@ -154,6 +159,9 @@ for i in df.index:     # fill overall angle from deck geometry where it is known
                          0.0 if pd.isna(r.berm_width_m) else r.berm_width_m)
         df.at[i, "beta_overall_deg"] = round(g.overall_angle, 2)
 df["dgms_compliant"] = [_dgms(r) for r in df.itertuples()]
+# Reg. 106 allows steeper/higher spoil banks when a scientific study recommends it and the
+# Regional Inspector permits it by order. No source states such an order for these dumps.
+df["dgms_permission"] = "not stated in source"
 df.insert(0, "case_id", [f"R{i+1:03d}" for i in range(len(df))])
 df.to_csv("data/real_cases.csv", index=False)
 print(df.status.value_counts().to_string()); print("training rows:", int(df.use_for_training.sum()))

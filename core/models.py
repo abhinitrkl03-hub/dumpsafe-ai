@@ -102,6 +102,15 @@ def _varying(X, tol=1e-6):
     return cols or [0]
 
 
+def _inside_weight(Xq, lo, hi, tau=1.0):
+    """1 inside the range spanned by a study's real cases, fading to 0 outside it
+    (distance measured in units of that range). Outside, only the study's mean offset
+    is applied, so a trend learned from a few cases is never extrapolated."""
+    width = np.maximum(hi - lo, 0.25)
+    d = np.maximum(np.maximum(lo - Xq, Xq - hi), 0.0) / width
+    return np.exp(-(d.max(axis=1) / tau) ** 2)
+
+
 def metrics(y, p):
     y, p = np.asarray(y, float), np.asarray(p, float)
     return dict(R2=r2_score(y, p) if len(y) > 1 else np.nan,
@@ -163,6 +172,8 @@ class FOSModel:
     methods_seen: tuple = ()
     gps: dict = field(default_factory=dict)
     gp_cols: dict = field(default_factory=dict)
+    gp_mean: dict = field(default_factory=dict)
+    gp_box: dict = field(default_factory=dict)
     default_method: str = "LEM"
     alpha: float = 0.10
     report: dict = field(default_factory=dict)
@@ -198,7 +209,11 @@ class FOSModel:
                 if k.sum() >= MIN_ROWS_PER_METHOD:
                     cols = _varying(X[k])
                     self.gp_cols[mth] = cols
-                    self.gps[mth] = make_gp(2, len(cols)).fit(X[k][:, cols], resid[k])
+                    # GP around the study's mean offset: far from its cases the correction
+                    # returns to that mean instead of drifting to zero or extrapolating a trend
+                    self.gp_mean[mth] = float(resid[k].mean())
+                    self.gp_box[mth] = (X[k][:, cols].min(0), X[k][:, cols].max(0))
+                    self.gps[mth] = make_gp(2, len(cols)).fit(X[k][:, cols], resid[k] - self.gp_mean[mth])
             self.methods_seen = tuple(sorted(self.gps))
             # default calibration = the group covering the most distinct dump sites
             sites = R["site"].values if "site" in R else np.arange(len(R))
@@ -241,6 +256,8 @@ class FOSModel:
         if gp is not None:
             Xq = self.scaler.transform(D[BASE])[:, self.gp_cols[method]]
             corr, gp_sd = gp.predict(Xq, return_std=True)
+            w = _inside_weight(Xq, *self.gp_box[method])
+            corr = self.gp_mean[method] + w * corr
             log_h = log_s + corr
         elif self.gps:        # no real case analysed with this method: physics only, wide band
             prior = max(np.sqrt(g.kernel_.k1.k1.constant_value) for g in self.gps.values())
@@ -281,8 +298,11 @@ class FOSModel:
                 k = tr & (meth == mth)
                 if k.sum() >= MIN_ROWS_PER_METHOD:
                     cols = _varying(Xs[k])
-                    gp = make_gp(0, len(cols)).fit(Xs[k][:, cols], np.log(y[k]) - np.log(p_phys[k]))
-                    p_hyb[t2] = p_phys[t2] * np.exp(gp.predict(Xs[t2][:, cols]))
+                    res_k = np.log(y[k]) - np.log(p_phys[k])
+                    mu = res_k.mean()
+                    gp = make_gp(0, len(cols)).fit(Xs[k][:, cols], res_k - mu)
+                    w = _inside_weight(Xs[t2][:, cols], Xs[k][:, cols].min(0), Xs[k][:, cols].max(0))
+                    p_hyb[t2] = p_phys[t2] * np.exp(mu + w * gp.predict(Xs[t2][:, cols]))
                 else:
                     p_hyb[t2] = p_phys[t2]     # no other site analysed with this method
             # real-only baseline: a GP learning FOS from the few real rows alone

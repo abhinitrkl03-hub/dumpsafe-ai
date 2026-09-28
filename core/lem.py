@@ -25,18 +25,25 @@ import numpy as np
 @dataclass
 class DumpGeometry:
     n_decks: int = 3
-    deck_height: float = 30.0      # m, height of one deck (bench)
+    deck_height: float = 30.0      # m, height of each full deck (bench)
     deck_angle: float = 32.0       # deg, face angle of one deck
     berm_width: float = 30.0       # m, width of berm between decks
+    top_deck_height: float | None = None   # m, height of the top deck if lower (e.g. 30+30+20)
+
+    def deck_heights(self) -> list:
+        hs = [self.deck_height] * self.n_decks
+        if self.top_deck_height is not None and self.n_decks >= 1:
+            hs[-1] = self.top_deck_height
+        return hs
 
     @property
     def height(self) -> float:
-        return self.n_decks * self.deck_height
+        return float(sum(self.deck_heights()))
 
     @property
     def horizontal_extent(self) -> float:
-        face = self.deck_height / np.tan(np.radians(self.deck_angle))
-        return self.n_decks * face + (self.n_decks - 1) * self.berm_width
+        cot = 1.0 / np.tan(np.radians(self.deck_angle))
+        return self.height * cot + (self.n_decks - 1) * self.berm_width
 
     @property
     def overall_angle(self) -> float:
@@ -44,12 +51,12 @@ class DumpGeometry:
 
     def surface(self) -> tuple[np.ndarray, np.ndarray]:
         """Polyline of the ground surface (x, y), toe at origin."""
-        face = self.deck_height / np.tan(np.radians(self.deck_angle))
+        cot = 1.0 / np.tan(np.radians(self.deck_angle))
         xs, ys = [-3.0 * self.height - 50.0, 0.0], [0.0, 0.0]
         x, y = 0.0, 0.0
-        for i in range(self.n_decks):
-            x += face
-            y += self.deck_height
+        for i, h in enumerate(self.deck_heights()):
+            x += h * cot
+            y += h
             xs.append(x); ys.append(y)
             if i < self.n_decks - 1:
                 x += self.berm_width
@@ -62,6 +69,23 @@ class DumpGeometry:
         return dict(H_m=self.height, beta_overall_deg=self.overall_angle,
                     deck_angle_deg=self.deck_angle, n_decks=self.n_decks,
                     deck_height_m=self.deck_height, berm_width_m=self.berm_width)
+
+
+    @staticmethod
+    def dgms_benched(height: float, overall_angle: float, deck_angle: float = 35.0,
+                     max_bench: float = 30.0) -> "DumpGeometry":
+        """Bench a dump of given total height and overall angle the way mines do under
+        CMR 2017 Reg. 106: full 30 m decks from the bottom, the remainder as the top deck,
+        berms sized so the overall angle is exactly `overall_angle`."""
+        n = int(np.ceil(height / max_bench - 1e-9))
+        top = height - (n - 1) * max_bench
+        if n == 1:
+            return DumpGeometry(1, height, overall_angle, 0.0)
+        horiz = height / np.tan(np.radians(overall_angle))
+        faces = height / np.tan(np.radians(deck_angle))
+        berm = (horiz - faces) / (n - 1)
+        return DumpGeometry(n, max_bench, deck_angle, max(berm, 0.0),
+                            None if abs(top - max_bench) < 1e-6 else top)
 
     @staticmethod
     def from_overall(height: float, overall_angle: float) -> "DumpGeometry":

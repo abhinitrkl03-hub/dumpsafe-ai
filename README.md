@@ -19,10 +19,20 @@ Berm width is not fixed by the regulation; the code uses the smallest berm that 
 within 1V:1.5H (and at least 10 m). `core/dgms.py` checks every design, and the app flags any geometry
 you enter that breaks these limits.
 
-Important difference from Sahoo et al. (2025): their 2,250-case design used **unbenched** single slopes
-60-120 m high at 25-40°, which Reg. 106 does not allow. Here their material ranges are kept but the
-dumps are benched to Reg. 106. With the same materials, the mean FOS rises from 1.08 (their unbenched
-design) to 1.41 (benched), which shows how much the DGMS benching rule adds to stability.
+**The Sahoo et al. (2025) dataset and DGMS.** The paper reports only "overall bench height" (60-120 m)
+and "overall slope angle" (25-40°). Re-solving all 2,250 published cases shows their FOS matches a
+*uniform, unbenched* slope at that height and angle: the in-house Bishop result is a steady
++3.6 % (SD 1.0 %, R² 0.999) above the published Janbu value, the normal Bishop-Janbu offset. A benched
+geometry with the same overall angle does not reproduce their numbers (scatter 4-8 %). So the paper's
+dumps were not benched and none of them meets Reg. 106 as modelled; the 35° and 40° cases also break the
+1V:1.5H overall limit.
+
+Here the 1,200 published cases at 25° and 30° are benched the way mines do (full 30 m decks from the
+bottom, the remainder as the top deck, e.g. 80 m = 30 + 30 + 20; deck angle up to 37.5°; berms sized to
+keep the published overall angle) and re-solved. At the same overall angle, benching lowers the mean
+FOS slightly (1.27 unbenched vs 1.23 benched, Bishop) because each deck is steeper than the overall
+slope, so a bench-scale slip can govern. The main safety gain of Reg. 106 comes from capping the overall
+angle at 33.7°, which removes the paper's 35-40° designs (the least stable half of its data).
 
 A separate set of 600 non-compliant simulations and the 14-row WCL failed dump (a 75 m unbenched
 slope) are **off by default**. Switch on "Also train on non-DGMS geometries" in the sidebar when you
@@ -32,7 +42,7 @@ back-analyse failed dumps, because real failures (WCL, Jayant) happened on dumps
 
 | | Sahoo et al. 2025 (Sci Rep) | ICSSMT-26 draft (previous work) | This platform |
 |---|---|---|---|
-| Training labels | 2,250 Slide runs on unbenched slopes up to 40° | 65 SLIDE2 runs expanded to 5,200 with FOS-scaling formulas | 4,000 DGMS-compliant runs of an in-house Bishop solver incl. 400 chosen by active learning (plus 600 optional non-compliant), validated against 8 SECL study values |
+| Training labels | 2,250 Slide runs on unbenched slopes up to 40° | 65 SLIDE2 runs expanded to 5,200 with FOS-scaling formulas | 3,996 DGMS-compliant Bishop runs: the paper's own 1,200 inputs at 25-30° benched to Reg. 106, 2,396 around real coal materials, 400 by active learning (plus 2,850 optional non-compliant); solver checked against 8 SECL RS2 values and all 2,250 published Slide cases |
 | Model inputs | Raw c, φ, γ, H, β, moisture | Raw inputs | Dimensionless groups (Buckingham-Pi / Janbu λ) with a neural-network ensemble |
 | DGMS / CMR 2017 | Not checked | Not checked | Every design checked against Reg. 106; non-compliant designs flagged and excluded by default |
 | Real field cases | Not used for training | Not used | 34 cited coal-dump cases from 10 sites calibrate the model |
@@ -62,7 +72,9 @@ simulation cannot give. Seven techniques are combined:
    weighted to the safety-critical band FOS 1.0-1.6 (`scripts/active_learning.py`). On an
    independent test set the worst-case error fell from 13.1 % to 9.4 %.
 5. **Sim-to-real correction per study.** A small Gaussian process per study (NIT Rourkela SECL study in
-   RS2, Jagannathpur in FLAC, WCL in FEM) learns how reported FOS differs from the solver, using real inputs only, and is held constant
+   RS2, Jagannathpur in FLAC, WCL in FEM) learns how reported FOS differs from the solver around that
+   study's mean offset. Outside the range spanned by the study's cases only the mean offset is used,
+   so a trend learned from a few cases is never extrapolated. It uses real inputs only, and is held constant
    along directions the real data never varies in (e.g. geometry for SECL).
 6. **Honest uncertainty.** Conformal intervals per method, widened by the correction's own
    uncertainty and by the ensemble spread.
@@ -76,16 +88,52 @@ column gives (a) independent verification of the solver in the software the SECL
 the SECL correction: all 8 SECL dumps share one geometry. Add the finished rows to
 `data/real_cases.csv` with study = "NIT Rourkela SECL study (RS2)" and a new site name for each.
 
+## Validation (V1-V11, shown live on the app's Validation page)
+
+| ID | Check | Result |
+|---|---|---|
+| V1 | Bishop solver vs SECL study FOS (RS2), 8 dumps | MAPE 2.2 %, bias -2.2 % |
+| V2 | Bishop solver vs 2,250 published Slide/Janbu cases | offset +3.59 % (SD 1.02 %), R² 0.999 |
+| V3 | Bishop solver vs closed-form infinite slope (c = 0) | max difference 0.6 % |
+| V4 | Surrogate vs 250 fresh exact cases | MAPE 0.81 %, R² 0.999 |
+| V5 | Surrogate 20 % hold-out | MAPE 0.74 %, R² 0.999 |
+| V6 | Physics direction (FOS up with c, φ; down with H, r_u) | worst violation 0.7 % of sweeps |
+| V7 | Leave-one-site-out, SECL (RS2) | hybrid 0.5 %, physics 2.1 %, rank agreement +0.98 |
+| V7 | Leave-one-site-out, Jagannathpur (FLAC) | 18.3 % (single-site study, offset cannot be learned); rank agreement +0.97, so the physics reproduces the trend with height and angle |
+| V8 | Monte Carlo vs 300 exact runs (Gevra) | mean 1.815 vs 1.813, SD 0.211 vs 0.214 |
+| V9 | Moisture path vs exact solver | max difference 1.6 % |
+| V10 | WCL failure (75 m, 43°) | peak strength 1.07 > reported 0.80 > residual strength 0.72: field strength at failure lies between peak and residual |
+| V11 | Reg. 106 check on known dumps | SECL compliant, WCL unbenched not compliant |
+
+Not validated (stated as assumptions in the app): moisture softening and the saturation threshold, the
+rain-to-r_u coefficient, and the single-site FLAC/FEM corrections. The velocity TARP bands, the acceptance
+criteria and the Reg. 106 limits are taken from their sources. `scripts/validate.py` regenerates the
+exact-solver references in `data/validation/`.
+
+## TARP classes and DGMS permission
+
+Acceptance criteria follow Read & Stacey (2009), Table 9.9 (overall slopes): minimum static FoS 1.2-1.3 / 1.3 /
+1.3-1.5 and maximum PoF 15-20 % / 5-10 % / 5 % for low / medium / high consequence. Green = both met,
+Yellow = marginal (one missed, or the prediction interval crosses the minimum), Orange = unstable design,
+Red = FOS below 1. The sidebar switch "DGMS permission for steeper / higher dumps" covers mines whose
+scientific study and Regional Inspector's order allow a spoil bank beyond Reg. 106; designs beyond the limits
+are then shown as "needs DGMS order" and the model also trains on non-compliant geometries.
+
+The full list of models and equations is on the app's **Methods and equations** page.
+
 ## Validation results (default: DGMS-compliant data, 20 real cases)
 
 | Test | Result |
 |---|---|
 | In-house Bishop (LEM) vs SECL study FOS computed in RS2 | MAE 0.041, MAPE 2.2 % (max 5.0 %), slightly conservative |
-| Surrogate vs exact solver, 20 % hold-out | **MAPE 0.73 %, R² 0.999** (gradient boosting on raw inputs: 3.3-4.4 %) |
+| In-house Bishop vs 2,250 published Slide (Janbu) cases, same geometry | offset +3.6 %, SD 1.0 %, R² 0.999 |
+| Surrogate vs exact solver, 20 % hold-out | **MAPE 0.74 %, R² 0.999** (gradient boosting on raw inputs: 3.0-4.3 %) |
+| Surrogate vs 250 fresh exact cases (independent) | MAPE 0.81 %, R² 0.999 |
 | Monte Carlo cross-check (80 exact runs) | MAPE 0.75 % |
-| Leave-one-site-out, SECL (RS2 study) | physics 3.3 %, **hybrid 0.9 %**, real-data-only GP 0.3 % (all 8 SECL share one geometry) |
+| Leave-one-site-out, SECL (RS2 study) | physics 2.1 %, **hybrid 0.5 %**, real-data-only GP 0.3 % (all 8 SECL share one geometry) |
+| Monte Carlo sensitivity vs exact Bishop (Gevra, 300 runs) | rank correlations c +0.69 / +0.74, φ +0.69 / +0.72, γ −0.13 / −0.16 (model / exact): same signs and ranking |
 | Leave-one-site-out, Jagannathpur (FLAC) | 18 % (only FLAC site, so its offset cannot be learned when held out) |
-| Transfer test: SECL materials in 4 new DGMS designs vs exact Bishop | real-data-only GP **18.8 %**, physics surrogate **0.3 %**, hybrid 3.3 % (the hybrid deliberately adds the ~3 % by which the RS2 results of the SECL study exceed Bishop) |
+| Transfer test: SECL materials in 4 new DGMS designs vs exact Bishop | real-data-only GP **18.8 %**, physics surrogate **0.4 %**, hybrid 2.1 % (the hybrid deliberately adds the ~2-3 % by which the RS2 results of the SECL study exceed Bishop) |
 
 RS2 (finite-element strength reduction) and this code's Bishop agree within about 3 % for the eight
 SECL dumps, as expected for homogeneous dumps. The Jagannathpur FLAC results are about 18 % above
@@ -121,23 +169,29 @@ and set `use_for_training` to True. Add your own cases in the same format, eithe
 through **Data and sources → Load your own real dataset** in the app. Use one `site` value per physical
 dump so validation holds out whole sites.
 
-`data/physics_dataset.csv`: 4,596 simulated rows, column `dgms_compliant` marks each.
-- Block A (1,200, compliant): material ranges of Sahoo et al. 2025 (Table 2) and their dump heights
-  (60-120 m), benched to Reg. 106.
+`data/physics_dataset.csv`: 6,846 simulated rows; column `dgms_compliant` marks each (3,996 compliant).
+- Block A (1,200, compliant): the **published inputs** of Sahoo et al. 2025 (Mendeley data) at 25° and
+  30°, benched to Reg. 106 (30 m decks, remainder on top) and re-solved. `FOS_paper` keeps their value.
 - Block B (2,396, compliant): Monte Carlo clouds around every real coal material plus 12 literature-range
   anchors (Kumar et al. 2023, coal mine OB: gamma 14-20.7 kN/m³, phi 8-40°, c 0-72 kPa); 1-4 benches of
   10-30 m, decks 24-37.5°, overall slope within 1V:1.5H, r_u 0-0.4. COVs from Kulhawy (1992).
 - Block D (400, compliant): chosen by active learning where the surrogate was least certain.
-- Block C (600, **non-compliant**, off by default): unbenched high slopes, benches over 30 m, decks over
-  37.5°, overall slopes over 33.7°, for failure back-analysis only.
+- Block C (600, non-compliant, off by default): unbenched high slopes, benches over 30 m, decks over
+  37.5°, overall slopes over 33.7°.
+- Block C2 (2,250, non-compliant, off by default): all published Sahoo et al. cases as unbenched slopes,
+  re-solved with Bishop, with the published FOS kept for comparison.
 
-The Mendeley dataset of Sahoo et al. (data.mendeley.com/datasets/459cbkwwdr/1) can be added as extra
-simulated rows through the Data page.
+`data/mendeley_solver_check.csv`: the case-by-case solver check. `data/raw/` holds the original
+Mendeley spreadsheet (Sahoo et al. 2025); check its licence on the Mendeley page and cite it.
 
 Regenerate after adding real materials:
 ```
 python scripts/build_real_cases.py              # only if you edit the script instead of the CSV
-python scripts/generate_physics_data.py all     # about 9 minutes
+python scripts/generate_physics_data.py all     # blocks B and C, about 7 minutes
+python scripts/active_learning.py               # block D, about 1 minute
+python scripts/import_mendeley.py check 0 2250  # solver check + block C2, about 4 minutes
+python scripts/import_mendeley.py bench 0 2250  # block A, about 3 minutes
+python scripts/import_mendeley.py merge
 ```
 
 ## Method in one paragraph (for the paper)

@@ -18,6 +18,13 @@ import numpy as np
 GAMMA_W = 9.81
 
 
+def saturation_moisture(gamma_dry, Gs=2.60):
+    """Largest possible moisture content (%) at this dry unit weight: all voids full
+    of water. w_sat = e / Gs with e = Gs*gamma_w/gamma_dry - 1."""
+    e = np.clip(Gs * GAMMA_W / np.asarray(gamma_dry) - 1.0, 0.05, None)
+    return 100.0 * e / Gs
+
+
 def bulk_unit_weight(gamma_dry, w_pct):
     return np.asarray(gamma_dry) * (1.0 + np.asarray(w_pct) / 100.0)
 
@@ -50,7 +57,10 @@ def soften(c, phi, w_pct, w_ref, kc=0.0, kphi=0.0):
 def moisture_state(c, phi, gamma_dry, w_pct, *, Gs=2.60, S_crit=0.80,
                    max_phreatic_ratio=1.0, w_ref=8.0, kc=0.0, kphi=0.0,
                    ru_external=0.0):
-    """Returns the effective (c, phi, gamma, r_u, S) the slope actually sees."""
+    """Returns the effective (c, phi, gamma, r_u, S) the slope actually sees.
+    Moisture above the saturation limit is physically impossible at this dry
+    density, so it is capped at w_sat."""
+    w_pct = np.minimum(np.asarray(w_pct, dtype=float), saturation_moisture(gamma_dry, Gs))
     gamma = bulk_unit_weight(gamma_dry, w_pct)
     S = degree_of_saturation(gamma_dry, w_pct, Gs)
     ru = ru_from_saturation(S, gamma, S_crit, max_phreatic_ratio)

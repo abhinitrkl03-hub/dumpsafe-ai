@@ -7,18 +7,20 @@ from .montecarlo import sample_inputs
 
 def design_envelope(model, c, phi, g, ru, heights, angles, berm=30.0,
                     covs=(0.3, 0.1, 0.05), n_mc=600, seed=0):
-    """For each (total height, deck angle): bench the dump per CMR 2017 Reg. 106
-    (benches <= 30 m, berm >= what 1V:1.5H requires), then predict mean FOS and PoF."""
+    """For each (total height, deck angle): bench the dump per CMR 2017 Reg. 106 the way
+    mines do (full 30 m decks from the bottom, remainder on top, berm >= what 1V:1.5H
+    requires), then predict mean FOS and PoF."""
     from .dgms import MAX_BENCH_HEIGHT, min_berm, check
     base = sample_inputs(n_mc, c, covs[0], phi, covs[1], g, covs[2], seed=seed)
     rows = []
     for h in heights:
         for a in angles:
-            n_decks = max(1, int(np.ceil(h / MAX_BENCH_HEIGHT)))
-            dh = h / n_decks
-            bw = max(berm, min_berm(n_decks, dh, a)) if n_decks > 1 else 0.0
-            geom = DumpGeometry(n_decks, dh, a, bw)
-            ok, _ = check(n_decks, dh, a, bw, geom.overall_angle)
+            n_decks = max(1, int(np.ceil(h / MAX_BENCH_HEIGHT - 1e-9)))
+            dh = min(h, MAX_BENCH_HEIGHT)
+            top = h - (n_decks - 1) * dh
+            bw = max(berm, min_berm(n_decks, dh, a, H=h)) if n_decks > 1 else 0.0
+            geom = DumpGeometry(n_decks, dh, a, bw, None if abs(top - dh) < 1e-6 else top)
+            ok, _ = check(n_decks, dh, a, bw, geom.overall_angle, H=h)
             d = base.copy(); d["r_u"] = ru
             for k, v in geom.cols().items():
                 d[k] = v

@@ -12,7 +12,7 @@ import streamlit as st
 
 from core.lem import DumpGeometry, bishop_fos, slip_arc
 from core.models import FOSModel, FEATURES, LABELS, METHOD_LABELS, method_class, engineer, metrics
-from core.moisture import moisture_state
+from core.moisture import moisture_state, saturation_moisture
 from core.montecarlo import sample_inputs, run_mc, reliability, exact_check, rank_sensitivity
 from core.monitoring import (process_series, inverse_velocity_forecast, classify_velocity,
                              demo_series, VELOCITY_TARP, LEVEL_ORDER)
@@ -37,15 +37,40 @@ TEAL = "#2F6B6A"
 TARP_COL = {"Green": "#2e7d4f", "Yellow": "#d8a31a", "Orange": "#d9731f", "Red": "#b03a2e"}
 st.markdown("""
 <style>
-  h1 {letter-spacing:-0.5px; font-weight:700;}
-  h2, h3 {letter-spacing:-0.2px;}
-  .tarp {border-radius:6px; padding:14px 18px; color:white; margin:6px 0 10px 0;}
-  .tarp b {font-size:1.25rem;}
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500&display=swap');
+  html, body, [class*="css"], .stMarkdown, .stText, p, li, label {font-family: 'IBM Plex Sans', system-ui, sans-serif;}
+  h1 {font-family:'IBM Plex Sans'; letter-spacing:-0.6px; font-weight:700; color:#1C2B2D;
+      border-left:6px solid #2F6B6A; padding-left:14px; margin-bottom:0.2rem;}
+  h2, h3 {font-family:'IBM Plex Sans'; letter-spacing:-0.2px; color:#1C2B2D;}
+  div[data-testid="stMetric"] {background:#ffffff; border:1px solid #d9e0de; border-radius:10px;
+      padding:12px 16px; box-shadow:0 1px 2px rgba(28,43,45,0.05);}
+  div[data-testid="stMetricValue"] {font-family:'IBM Plex Mono', monospace; font-variant-numeric:tabular-nums;}
+  div[data-testid="stMetricLabel"] p {font-size:0.82rem; color:#4a5a5c;}
+  .tarp {border-radius:10px; padding:14px 18px; color:white; margin:6px 0 12px 0; line-height:1.45;}
+  .tarp b {font-size:1.25rem; letter-spacing:0.3px;}
   .src {font-size:0.82rem; color:#4a5a5c;}
-  div[data-testid="stMetricValue"] {font-variant-numeric: tabular-nums;}
+  .badge {display:inline-block; border-radius:999px; padding:2px 10px; font-size:0.78rem; font-weight:600;
+          margin-right:6px;}
+  .ok {background:#dcefe4; color:#1f5c3a;} .warn {background:#fbeccc; color:#7a5510;}
+  .bad {background:#f6d9d5; color:#7b1d1d;} .info {background:#dde9f3; color:#23496b;}
+  section[data-testid="stSidebar"] {background:#e7ecea;}
+  .lede {color:#3c4b4d; font-size:1.02rem; margin-top:-0.3rem;}
 </style>""", unsafe_allow_html=True)
-PLOT = dict(template="simple_white", margin=dict(l=10, r=10, t=40, b=10),
-            font=dict(color=INK), height=380)
+
+
+def badge(text, kind="info"):
+    return f"<span class='badge {kind}'>{text}</span>"
+
+
+def validated(text, kind="ok"):
+    """Small line under a result saying how it was checked (see the Validation page)."""
+    st.markdown(badge("validated" if kind == "ok" else "assumption" if kind == "warn" else "note", kind)
+                + f"<span class='src'>{text}</span>", unsafe_allow_html=True)
+
+
+PLOT = dict(template="simple_white", margin=dict(l=10, r=10, t=48, b=10),
+            font=dict(color=INK, family="IBM Plex Sans, sans-serif", size=13),
+            title_font=dict(size=15), height=390)
 
 
 # ------------------------------------------------------------------ data
@@ -102,54 +127,66 @@ if "last" not in st.session_state:
 st.sidebar.title("DumpSafe AI")
 st.sidebar.caption("Sim-to-real FOS prediction for overburden dumps")
 PAGE = st.sidebar.radio("Go to", [
-    "Overview", "Data and sources", "Model lab", "Predict and TARP", "Monte Carlo reliability",
-    "Moisture and rainfall", "Design envelope", "Back-analysis of failures",
-    "Real-time monitoring", "Report"])
+    "Overview", "Data and sources", "Methods and equations", "Validation", "Model lab",
+    "Predict and TARP", "Monte Carlo reliability", "Moisture and rainfall", "Design envelope",
+    "Back-analysis of failures", "Real-time monitoring", "Report"])
 
-with st.sidebar.expander("TARP thresholds", expanded=False):
-    preset = st.selectbox("Preset", ["4-level (default)", "3-level (ICSSMT-26 draft)"])
-    if preset.startswith("4"):
-        g_thr = st.number_input("Green if FOS >=", value=1.50, step=0.05)
-        y_thr = st.number_input("Yellow if FOS >=", value=1.30, step=0.05)
-        o_thr = st.number_input("Orange if FOS >=", value=1.00, step=0.05)
-    else:
-        g_thr = st.number_input("Green if FOS >=", value=1.80, step=0.05)
-        y_thr = st.number_input("Yellow if FOS >=", value=1.50, step=0.05)
-        o_thr = y_thr
-    p_g = st.number_input("Green if PoF < (%)", value=1.0) / 100
-    p_y = st.number_input("Yellow if PoF < (%)", value=5.0) / 100
-    p_o = st.number_input("Orange if PoF < (%)", value=10.0) / 100
-    st.caption("Defaults are editable starting points. Set them to your mine's "
-               "approved design criteria / DGMS permission conditions.")
+# Acceptance criteria: Read & Stacey (2009) Guidelines for Open Pit Slope Design, Table 9.9
+# (Wesseloo & Read), overall slope scale. Minimum static FoS / maximum PoF.
+RS_TABLE = {"Low": (1.2, 0.20), "Medium": (1.3, 0.10), "High": (1.3, 0.05)}
+with st.sidebar.expander("Acceptance criteria (TARP)", expanded=False):
+    cons = st.selectbox("Consequence of failure", ["Medium", "Low", "High"],
+                        help="Overall-slope criteria of Read & Stacey (2009), Table 9.9: Low FoS 1.2-1.3 / "
+                             "PoF 15-20 %; Medium FoS 1.3 / PoF 5-10 %; High FoS 1.3-1.5 / PoF 5 %. A dump "
+                             "next to haul roads, workings or villages is at least Medium.")
+    fs_def, pf_def = RS_TABLE[cons]
+    FOS_MIN = st.number_input("Minimum acceptable FOS", 1.0, 2.0, fs_def, 0.05)
+    POF_MAX = st.number_input("Maximum acceptable PoF (%)", 0.5, 50.0, pf_def * 100, 0.5) / 100
+    st.caption("Use the values in your mine's approved scientific study / DGMS permission if they differ.")
 alpha = st.sidebar.select_slider("Prediction-interval coverage", [0.80, 0.90, 0.95], value=0.90)
 st.session_state.use_noncompliant = st.sidebar.toggle(
-    "Also train on non-DGMS geometries", value=False,
-    help="Off: simulations follow CMR 2017 Reg. 106 only (benches <= 30 m, deck <= 37.5 deg, overall "
-         "<= 1V:1.5H). On: adds 600 non-compliant dumps so the model also learns the failure zone "
-         "(useful for back-analysing failed dumps such as WCL or Jayant).")
+    "DGMS permission for steeper / higher dumps", value=False,
+    help="Reg. 106 of CMR 2017 lets a spoil bank exceed 37.5 deg, 30 m benches or 1V:1.5H only when a "
+         "scientific study recommends it and the Regional Inspector permits it by order. Switch on if your "
+         "mine holds such an order (or to back-analyse failed non-compliant dumps). The model then also "
+         "trains on 2,850 non-compliant designs and the 14 WCL cases, and designs beyond Reg. 106 are shown "
+         "as 'needs DGMS order' instead of 'not allowed'.")
 model: FOSModel = train_model(st.session_state.real.to_csv(index=False), 1 - alpha,
                               st.session_state.use_noncompliant)
 st.sidebar.caption(f"Model trained on {len(load_physics()):,} physics rows + "
                    f"{model.n_real} real rows" + ("" if st.session_state.use_noncompliant
-                                                  else " (DGMS-compliant only)"))
+                                                  else " (DGMS Reg. 106 designs only)"))
 
+# Actions follow the stability classes of Read & Stacey (2009) ch. 9 (stable / marginal /
+# unstable) plus a failure class (FOS < 1).
 ACTIONS = {
-    "Green": "Normal operations. Routine monitoring as per plan.",
-    "Yellow": "Increase survey frequency, inspect for cracks and seepage, check drainage.",
-    "Orange": "Restrict access below the toe, stop dumping on the affected deck, "
-              "install extra prisms/piezometers, review geometry with the geotechnical engineer.",
-    "Red": "Stop dumping, evacuate the toe and haul road in the influence zone, "
-           "flatten or unload the dump, dewater, and redesign.",
+    "Green": "Stable: meets the acceptance criteria. Normal operations and routine monitoring.",
+    "Yellow": "Marginal: fails one criterion (or the uncertainty band crosses it). Minor geometry changes, "
+              "closer monitoring, check drainage and cracks.",
+    "Orange": "Unstable design: fails the acceptance criteria. Major geometry changes (flatten, lower, wider "
+              "berms), dewatering, restrict access below the toe.",
+    "Red": "Failure predicted (FOS < 1). Stop dumping, evacuate the influence zone, unload or redesign.",
 }
 ORDER = ["Green", "Yellow", "Orange", "Red"]
 
 
-def fos_level(f):
-    return "Green" if f >= g_thr else "Yellow" if f >= y_thr else "Orange" if f >= o_thr else "Red"
+def det_level(fos, fos_lo=None):
+    """Deterministic class from FOS and the lower end of its prediction interval."""
+    if fos < 1.0: return "Red"
+    if fos < FOS_MIN: return "Orange"
+    if fos_lo is not None and fos_lo < FOS_MIN: return "Yellow"
+    return "Green"
 
 
-def pof_level(p):
-    return "Green" if p < p_g else "Yellow" if p < p_y else "Orange" if p < p_o else "Red"
+def prob_level(mean_fos, pof):
+    """Probabilistic class (Read & Stacey): both criteria met = stable, one = marginal, none = unstable."""
+    if mean_fos < 1.0: return "Red"
+    met = int(bool(mean_fos >= FOS_MIN)) + int(bool(pof <= POF_MAX))
+    return {2: "Green", 1: "Yellow", 0: "Orange"}[int(met)]
+
+
+def fos_level(f):          # single value (e.g. one Monte Carlo realisation)
+    return det_level(f)
 
 
 def vel_to_tarp(level):
@@ -191,21 +228,33 @@ def profile_fig(geom: DumpGeometry, res=None, title="", fos=None):
 
 
 def geometry_inputs(key, default=(3, 30.0, 32.0, 30.0)):
-    c1, c2, c3, c4 = st.columns(4)
-    nd = c1.number_input("Number of decks", 1, 6, default[0], key=f"{key}nd")
-    dh = c2.number_input("Deck height (m)", 5.0, 60.0, default[1], key=f"{key}dh")
-    da = c3.number_input("Deck angle (deg)", 15.0, 45.0, default[2], key=f"{key}da")
-    bw = c4.number_input("Berm width (m)", 0.0, 60.0, default[3], key=f"{key}bw",
+    c1, c2, c3, c4, c5 = st.columns(5)
+    nd = c1.number_input("Number of decks", 1, 8, default[0], key=f"{key}nd")
+    dh = c2.number_input("Deck height (m)", 5.0, 150.0, default[1], key=f"{key}dh",
+                         help="Reg. 106: at most 30 m when the dump is higher than 30 m. Larger values are "
+                              "allowed here only to study unbenched or permitted dumps.")
+    top = c3.number_input("Top deck height (m)", 0.0, 150.0, 0.0, key=f"{key}top", disabled=nd == 1,
+                          help="0 = same as the other decks. Mines usually build full 30 m decks "
+                               "and put the remainder on top (e.g. 30 + 30 + 20 m).")
+    da = c4.number_input("Deck angle (deg)", 10.0, 60.0, default[2], key=f"{key}da")
+    bw = c5.number_input("Berm width (m)", 0.0, 150.0, default[3], key=f"{key}bw",
                          disabled=nd == 1)
-    g = DumpGeometry(int(nd), dh, da, bw if nd > 1 else 0.0)
-    ok, viol = dgms_check(g.n_decks, g.deck_height, g.deck_angle, g.berm_width, g.overall_angle)
+    g = DumpGeometry(int(nd), dh, da, bw if nd > 1 else 0.0,
+                     top if (nd > 1 and top > 0) else None)
+    ok, viol = dgms_check(g.n_decks, g.deck_height, g.deck_angle, g.berm_width, g.overall_angle,
+                          H=g.height)
     if ok:
         st.success(f"DGMS / CMR 2017 Reg. 106 compliant: benches {g.deck_height:.0f} m, deck "
                    f"{g.deck_angle:.1f} deg, overall {g.overall_angle:.1f} deg (limit 33.7).")
     else:
-        need = min_berm(g.n_decks, g.deck_height, g.deck_angle)
+        need = min_berm(g.n_decks, g.deck_height, g.deck_angle, H=g.height)
         tip = f" A berm of at least {need:.0f} m would meet the overall-slope limit." if g.n_decks > 1 else ""
-        st.warning("Not DGMS compliant: " + "; ".join(viol) + "." + tip)
+        if st.session_state.get("use_noncompliant"):
+            st.info("Beyond CMR 2017 Reg. 106 limits (" + "; ".join(viol) + "). Acceptable only under a DGMS "
+                    "order based on a scientific study - check that the order covers this geometry." + tip)
+        else:
+            st.warning("Not DGMS compliant: " + "; ".join(viol) + "." + tip +
+                       " If the mine holds a DGMS permission order, switch it on in the sidebar.")
     return g
 
 
@@ -218,9 +267,9 @@ def material_inputs(key, default=(44.0, 30.0, 18.63)):
         r = real.iloc[opts.index(pick) - 1]
         default = (float(r.c_kPa), float(r.phi_deg), float(r.gamma_kNm3))
     c1, c2, c3 = st.columns(3)
-    c = c1.number_input("Cohesion c (kPa)", 0.0, 300.0, default[0], key=f"{key}c{pick}")
-    phi = c2.number_input("Friction angle phi (deg)", 1.0, 50.0, default[1], key=f"{key}p{pick}")
-    g = c3.number_input("Unit weight (kN/m3)", 10.0, 32.0, default[2], key=f"{key}g{pick}",
+    c = c1.number_input("Cohesion c (kPa)", 0.0, 500.0, default[0], key=f"{key}c{pick}")
+    phi = c2.number_input("Friction angle phi (deg)", 1.0, 60.0, default[1], key=f"{key}p{pick}")
+    g = c3.number_input("Unit weight (kN/m3)", 10.0, 35.0, default[2], key=f"{key}g{pick}",
                         help="Bulk unit weight. With the moisture channel ON this becomes the "
                              "DRY unit weight and bulk weight is computed from moisture.")
     return c, phi, g
@@ -263,6 +312,9 @@ def row(c, phi, g, ru, geom):
 # =================================================================== pages
 if PAGE == "Overview":
     st.title("How safe is this dump, and how sure are we?")
+    st.markdown("<p class='lede'>Factor of safety of coal-mine overburden dumps from a validated physics engine, "
+                "calibrated on real studies, with uncertainty, DGMS checks and real-time alerts.</p>",
+                unsafe_allow_html=True)
     geom = DumpGeometry(3, 30, 32, 30)
     res = bishop_fos(geom, 44, 30, 18.63)
     pred = model.predict(row(44, 30, 18.63, 0, geom)).iloc[0]
@@ -278,10 +330,16 @@ if PAGE == "Overview":
         st.caption(f"{int(alpha*100)}% prediction interval: {pred.FOS_lo:.2f} to {pred.FOS_hi:.2f}")
     st.subheader("What this platform does differently")
     st.markdown("""
-- **Coal mines only, DGMS first.** All simulations follow CMR 2017 Reg. 106 (benches up to 30 m, decks up
-  to 37.5 deg, overall slope within 1V:1.5H). 20 DGMS-compliant real SECL cases calibrate the model by
-  default; the 14-row WCL failed dump (unbenched, non-compliant) is added when you switch on
-  non-DGMS geometries. 29 more cited coal cases are waiting for missing values.
+- **Coal mines only, DGMS first.** Default simulations follow CMR 2017 Reg. 106 (benches up to 30 m, decks up
+  to 37.5 deg, overall slope within 1V:1.5H). 20 Reg. 106-compliant real coal cases (8 SECL in RS2, 12
+  Jagannathpur in FLAC) calibrate the model. Mines holding a DGMS permission order for steeper or higher
+  dumps can switch it on in the sidebar; the WCL failed dump is then included. 29 more cited coal cases are
+  waiting for missing values.
+- **Every result is checked.** The Validation page compares each part of the model with an independent
+  reference (published results, closed-form solutions, the exact solver, a real failure); the Methods page
+  gives every equation and source.
+- **Acceptance criteria from practice.** TARP classes follow the overall-slope FoS / PoF criteria of Read &
+  Stacey (2009) for the chosen consequence of failure.
 - **Own physics engine.** Every synthetic label comes from a Bishop simplified solver written for this
   project and checked against the 8 SECL study values, not from FOS-scaling formulas.
 - **Method-aware.** Each real FOS is tagged with the software that produced it (RS2 for SECL, FLAC for
@@ -333,30 +391,53 @@ elif PAGE == "Data and sources":
                                      if mode.startswith("Append") else new[real.columns])
             st.success(f"Loaded {len(new)} rows. The model retrains automatically.")
             st.rerun()
-    st.subheader("Optional: add the Sahoo et al. (2025) Mendeley dataset")
-    st.caption("Download it from the paper's data-availability link (data.mendeley.com/datasets/459cbkwwdr/1) "
-               "and upload the CSV/XLSX. Columns are mapped automatically; rows are tagged as simulated.")
-    md = st.file_uploader("Mendeley file", type=["csv", "xlsx"], key="mend")
-    if md is not None:
-        m = pd.read_csv(md) if md.name.endswith("csv") else pd.read_excel(md)
-        mp = {"Cohesion (kN/m2)": "c_kPa", "Phi (deg)": "phi_deg", "Unit Weight (kN/m3)": "gamma_kNm3",
-              "Overall Bench Height": "H_m", "Overall Slope angle": "beta_overall_deg",
-              "Natural Moisture content": "moisture_pct", "FOS": "FOS"}
-        m = m.rename(columns={k: v for k, v in mp.items() if k in m})
-        st.write(f"{len(m)} rows read. First rows:"); st.dataframe(m.head())
-        st.info("These are SLIDE-simulated rows (not field cases). Use them as extra physics training "
-                "data by appending them to data/physics_dataset.csv with block='C_mendeley'.")
+    st.subheader("Sahoo et al. (2025) Mendeley dataset - included")
+    st.markdown(
+        "The 2,250 published Slide (Janbu simplified) cases are built in, used two ways:\n"
+        "- **Solver check:** each case re-solved with the in-house Bishop solver on the same "
+        "geometry (a uniform slope). The published FOS matches a *uniform, unbenched* slope, so the "
+        "paper did not bench its dumps.\n"
+        "- **DGMS version (block A):** the 1,200 cases with overall angle 25 or 30 deg benched the "
+        "way mines do (30 m decks, remainder on top, deck angle up to 37.5 deg, berms keeping the "
+        "published overall angle) and re-solved. The 35 and 40 deg cases break the 1V:1.5H rule "
+        "and stay in the non-DGMS set with the 2,250 unbenched originals (block C2).")
+    chk_path = os.path.join(DATA, "mendeley_solver_check.csv")
+    if os.path.exists(chk_path):
+        chk = pd.read_csv(chk_path)
+        k = st.columns(3)
+        k[0].metric("Cases compared", f"{len(chk):,}")
+        k[1].metric("Bishop minus published (mean)", f"{chk.diff_pct.mean():+.2f}%")
+        k[2].metric("Spread of the difference (SD)", f"{chk.diff_pct.std():.2f}%")
+        fch = px.scatter(chk, x="FOS_paper", y="FOS", color=chk.beta_overall_deg.astype(int).astype(str),
+                         labels={"FOS_paper": "Published FOS (Slide, Janbu simplified)",
+                                 "FOS": "In-house Bishop FOS", "color": "Overall angle"}, opacity=0.6)
+        lim = [chk[["FOS", "FOS_paper"]].min().min(), chk[["FOS", "FOS_paper"]].max().max()]
+        fch.add_trace(go.Scatter(x=lim, y=lim, mode="lines", line=dict(color="#999", dash="dot"),
+                                 name="1:1"))
+        st.plotly_chart(fch.update_layout(**PLOT, title="Solver check on 2,250 published cases"), **FULL)
+        st.caption("A steady +3-4 % offset is expected: Janbu's simplified method without its "
+                   "correction factor gives lower FOS than Bishop's method for circular slips.")
     st.subheader("Physics dataset")
     ph = load_physics()
     st.write(ph.groupby("block").agg(rows=("FOS", "size"), FOS_min=("FOS", "min"),
                                      FOS_median=("FOS", "median"), FOS_max=("FOS", "max")))
     st.plotly_chart(px.histogram(ph, x="FOS", color="block", nbins=60, barmode="overlay",
                                  opacity=0.65).update_layout(**PLOT), **FULL)
-    st.markdown("<p class='src'>Block A replicates the parametric design of Sahoo et al. (2025), "
-                "Sci Rep 15:40985 (Table 11 geometry, Table 2 ranges). Block B samples around each real "
+    st.markdown("<p class='src'>Block A: the published inputs of Sahoo et al. (2025), Sci Rep 15:40985 "
+                "(Mendeley data), benched to CMR 2017 Reg. 106. Block B samples around each real "
                 "material with COVs from Kulhawy (1992) and literature ranges of Kumar et al. (2023), "
                 "Geotech Geol Eng 41:4707. Labels from the in-house Bishop solver (core/lem.py).</p>",
                 unsafe_allow_html=True)
+
+# ------------------------------------------------------------------
+elif PAGE == "Methods and equations":
+    from pages_extra import methods_page
+    methods_page()
+
+# ------------------------------------------------------------------
+elif PAGE == "Validation":
+    from pages_extra import validation_page
+    validation_page(model, load_physics(), training_rows(st.session_state.real), DATA, PLOT, FULL, badge)
 
 # ------------------------------------------------------------------
 elif PAGE == "Model lab":
@@ -375,7 +456,7 @@ elif PAGE == "Model lab":
         st.caption("Physics check - share of sweeps where FOS moved the wrong way: " +
                    ", ".join(f"{k} {v:.1f}%" for k, v in viol.items()))
     with c2:
-        st.subheader("Leave-one-mine-out on real cases")
+        st.subheader("Leave-one-site-out on real cases")
         if "loo" in rep:
             st.dataframe(rep["loo"]["table"].style.format("{:.4f}"))
             st.caption("Each dump site is predicted by a model that never saw any of its rows.")
@@ -450,6 +531,10 @@ elif PAGE == "Predict and TARP":
     st.caption(f"Total height {geom.height:.0f} m, overall slope angle {geom.overall_angle:.1f} deg")
     st.subheader("Water"); on, w, cfg, ru_ext = moisture_inputs("p")
     ce, pe, ge, ru, S = effective(c, phi, g, on, w, cfg, ru_ext)
+    if on and w > float(saturation_moisture(g, cfg["Gs"])):
+        st.warning(f"Moisture {w:.1f} % is above the saturation limit "
+                   f"({float(saturation_moisture(g, cfg['Gs'])):.1f} %) for this dry unit weight; it is "
+                   "capped at saturation.")
     if on:
         st.caption(f"Effective values: c={ce:.1f} kPa, phi={pe:.1f} deg, bulk unit weight={ge:.2f} kN/m3, "
                    f"saturation={S:.2f}, r_u={ru:.3f}")
@@ -460,14 +545,13 @@ elif PAGE == "Predict and TARP":
                              "separate correction for each study; the default is the one covering the "
                              "most dump sites. 'Physics surrogate (Bishop)' is shown alongside.")
     pr = model.predict(row(ce, pe, ge, ru, geom), method=meth).iloc[0]
-    lvl = fos_level(pr.FOS)
+    lvl = det_level(pr.FOS, pr.FOS_lo)
     c1, c2, c3 = st.columns(3)
     c1.metric("Predicted FOS", f"{pr.FOS:.3f}")
     c2.metric(f"{int(alpha*100)}% interval", f"{pr.FOS_lo:.2f} - {pr.FOS_hi:.2f}")
     c3.metric("Physics-only surrogate (Bishop)", f"{pr.FOS_physics:.3f}")
-    tarp_box(lvl, f"FOS {pr.FOS:.2f}",
-             "Lower bound of the interval is in a worse band - treat with caution."
-             if fos_level(pr.FOS_lo) != lvl else "")
+    tarp_box(lvl, f"FOS {pr.FOS:.2f} against minimum {FOS_MIN:.2f} ({cons} consequence, Read & Stacey 2009)",
+             "The lower end of the prediction interval falls below the minimum." if lvl == "Yellow" else "")
     extrap = []
     ph = load_physics()
     for f, v in dict(c_kPa=ce, phi_deg=pe, gamma_kNm3=ge, H_m=geom.height).items():
@@ -512,15 +596,15 @@ elif PAGE == "Monte Carlo reliability":
     k[2].metric("PoF (FOS < 1)", f"{r['pof']*100:.2f}%", help=f"95% CI +/- {r['pof_ci']*100:.2f}%")
     k[3].metric("Reliability index (lognormal)", f"{r['beta_lognormal']:.2f}")
     k[4].metric("COV of FOS", f"{r['cov']*100:.1f}%")
-    lvl = worst(fos_level(r["mean"]), pof_level(r["pof"]))
-    tarp_box(lvl, f"mean FOS {r['mean']:.2f}, PoF {r['pof']*100:.2f}%",
-             "Level = worse of the FOS band and the PoF band.")
+    lvl = prob_level(r["mean"], r["pof"])
+    tarp_box(lvl, f"mean FOS {r['mean']:.2f} (min {FOS_MIN:.2f}), PoF {r['pof']*100:.2f}% (max {POF_MAX*100:.0f}%)",
+             "Stable = both criteria met, marginal = one, unstable = none (Read & Stacey 2009, ch. 9).")
     c1, c2 = st.columns(2)
     fig = px.histogram(df, x="FOS", nbins=80, color_discrete_sequence=[TEAL])
-    for thr, col in [(1.0, SLIP), (y_thr, TARP_COL["Yellow"]), (g_thr, TARP_COL["Green"])]:
+    for thr, col in [(1.0, SLIP), (FOS_MIN, TARP_COL["Green"])]:
         fig.add_vline(x=thr, line_dash="dash", line_color=col)
     c1.plotly_chart(fig.update_layout(**PLOT, title="FOS distribution"), **FULL)
-    lv = df.FOS.map(fos_level).value_counts().reindex(ORDER).fillna(0) / n * 100
+    lv = df.FOS.map(fos_level).value_counts().reindex(["Green", "Orange", "Red"]).fillna(0) / n * 100
     c2.plotly_chart(px.bar(x=lv.index, y=lv.values, color=lv.index, color_discrete_map=TARP_COL,
                            labels={"x": "", "y": "% of realisations"})
                     .update_layout(**PLOT, showlegend=False, title="TARP level distribution"),
@@ -537,6 +621,16 @@ elif PAGE == "Monte Carlo reliability":
         st.write(f"Physics surrogate vs exact Bishop: R2 {m['R2']:.3f}, MAE {m['MAE']:.3f}, MAPE {m['MAPE']:.2f}%")
         st.plotly_chart(px.scatter(chk, x="exact_bishop", y="surrogate").update_layout(**PLOT),
                         **FULL)
+        from scipy.stats import spearmanr
+        sub = df.loc[df.sample(min(80, len(df)), random_state=1).index]
+        cmp = pd.DataFrame({
+            "Exact Bishop (80 runs)": {LABELS[c]: spearmanr(sub[c], chk.exact_bishop).statistic
+                                       for c in ["c_kPa", "phi_deg", "gamma_kNm3"]},
+            f"Model ({n:,} runs)": {LABELS[c]: sens.get(c, np.nan) for c in ["c_kPa", "phi_deg", "gamma_kNm3"]}})
+        st.write("Sensitivity check - rank correlation with FOS:")
+        st.dataframe(cmp.style.format("{:+.2f}"))
+        st.caption("Signs and ranking should agree. Small differences come from the real-data correction "
+                   "and from the smaller exact sample (about +/-0.1 with 80 runs).")
     st.session_state.last["mc"] = dict(n=n, **{k_: float(v) for k_, v in r.items()}, level=lvl)
     st.download_button("Download realisations (CSV)", df.to_csv(index=False), "monte_carlo.csv")
 
@@ -554,8 +648,14 @@ elif PAGE == "Moisture and rainfall":
     kc = c4.number_input("Cohesion loss per 1% above ref", 0.0, 0.2, 0.02, 0.005)
     kp = c5.number_input("Friction loss per 1% above ref (deg)", 0.0, 2.0, 0.2, 0.05)
     st.caption("Softening coefficients here are illustrative. Replace them with values fitted to your "
-               "own direct-shear tests at several moisture contents.")
-    ws = np.linspace(2, 30, 57)
+               "own direct-shear tests at several moisture contents. The pore-pressure line assumes the "
+               "water table rises through the whole dump once saturation passes the threshold - a "
+               "worst case. Real dumps usually saturate from the surface or the base first.")
+    w_sat = float(saturation_moisture(gd, Gs))
+    ws = np.linspace(2, w_sat, 60)
+    st.info(f"With dry unit weight {gd:.1f} kN/m3 and Gs {Gs:.2f}, the voids are completely full of water at "
+            f"**{w_sat:.1f} % moisture**. Higher moisture is physically impossible at this density, so the "
+            f"curves stop there.")
     curves = {}
     for name, cfg in {"Unit weight only": dict(S_crit=1.01, kc=0, kphi=0),
                       "+ pore pressure": dict(S_crit=Sc, kc=0, kphi=0),
@@ -567,6 +667,8 @@ elif PAGE == "Moisture and rainfall":
     for (name, y), col in zip(curves.items(), ["#8c8c8c", "#3b7ea1", SLIP]):
         fig.add_trace(go.Scatter(x=ws, y=y, name=name, line=dict(color=col, width=3)))
     fig.add_hline(y=1.0, line_dash="dot", line_color=SLIP)
+    fig.add_vline(x=w_sat, line_dash="dash", line_color="#3b7ea1",
+                  annotation_text="fully saturated", annotation_position="top left")
     fig.update_layout(**PLOT, title="FOS vs moisture content")
     fig.update_xaxes(title="Moisture content (%)"); fig.update_yaxes(title="FOS")
     st.plotly_chart(fig, **FULL)
@@ -586,12 +688,14 @@ elif PAGE == "Design envelope":
     c2, c3, c4 = st.columns(3)
     bw = c2.number_input("Preferred berm width (m)", 10.0, 60.0, 30.0)
     ru = c3.slider("Design r_u", 0.0, 0.5, 0.0, 0.01)
-    target = c4.number_input("Target FOS", 1.0, 2.0, 1.3, 0.05)
-    pof_t = st.slider("Maximum acceptable PoF (%)", 0.5, 20.0, 5.0, 0.5) / 100
+    target = c4.number_input("Target FOS", 1.0, 2.0, float(FOS_MIN), 0.05,
+                             help="Defaults to the sidebar acceptance criterion (Read & Stacey 2009).")
+    pof_t = st.slider("Maximum acceptable PoF (%)", 0.5, 50.0, float(POF_MAX * 100), 0.5) / 100
     heights = np.arange(30, 121, 10); angles = np.arange(24, 41, 1)
     with st.spinner("Evaluating designs ..."):
         env = design_envelope(model, c, phi, g, ru, heights, angles, berm=bw)
-    env["ok"] = (env.FOS_mean >= target) & (env.PoF <= pof_t) & env.dgms_ok
+    allowed = env.dgms_ok | bool(st.session_state.get("use_noncompliant"))
+    env["ok"] = (env.FOS_mean >= target) & (env.PoF <= pof_t) & allowed
     Z = env.pivot(index="H_m", columns="deck_angle_deg", values="FOS_mean")
     fig = go.Figure(go.Heatmap(z=Z.values, x=Z.columns, y=Z.index, colorscale="RdYlGn",
                                zmin=0.8, zmax=2.0, colorbar=dict(title="FOS")))
@@ -602,7 +706,9 @@ elif PAGE == "Design envelope":
     NC = env.pivot(index="H_m", columns="deck_angle_deg", values="dgms_ok")
     ncx, ncy = np.meshgrid(NC.columns, NC.index)
     fig.add_trace(go.Scatter(x=ncx[~NC.values], y=ncy[~NC.values], mode="markers",
-                             marker=dict(symbol="x", color="#333", size=7), name="Not allowed by Reg. 106"))
+                             marker=dict(symbol="x", color="#333", size=7),
+                             name=("Needs DGMS order (beyond Reg. 106)" if st.session_state.get("use_noncompliant")
+                                   else "Not allowed by Reg. 106")))
     fig.update_layout(**PLOT, title="Mean FOS; black line = limit meeting FOS, PoF and DGMS")
     fig.update_xaxes(title="Deck angle (deg)"); fig.update_yaxes(title="Total dump height (m)")
     st.plotly_chart(fig, **FULL)
@@ -639,11 +745,12 @@ elif PAGE == "Back-analysis of failures":
 # ------------------------------------------------------------------
 elif PAGE == "Real-time monitoring":
     st.title("Real-time monitoring and unified TARP")
-    src = st.radio("Data source", ["Demo feed (synthetic)", "Upload CSV", "Live CSV URL"],
-                   horizontal=True)
+    st.markdown("<p class='lede'>Slope movement from prisms / radar, the rainfall-updated FOS and an "
+                "inverse-velocity failure forecast, combined into one alert level.</p>", unsafe_allow_html=True)
+    src = st.radio("Data source", ["Demo feed (synthetic)", "Upload CSV", "Live CSV URL"], horizontal=True)
     st.caption("Required columns: timestamp, displacement_mm. Optional: rainfall_mm, r_u (piezometer). "
                "Total-station, prism or radar exports work once renamed.")
-    url = None
+    url, t_true = None, None
     if src == "Upload CSV":
         up = st.file_uploader("Monitoring CSV", type="csv")
         raw = pd.read_csv(up) if up else None
@@ -651,22 +758,29 @@ elif PAGE == "Real-time monitoring":
         url = st.text_input("Published CSV link (e.g. Google Sheets > Publish to web > CSV)")
         raw = None
     else:
-        raw = demo_series()
-        st.info("Synthetic demonstration data. Replace with real prism/radar readings.")
-    c1, c2, c3 = st.columns(3)
-    smooth = c1.number_input("Velocity smoothing window (days)", 0.25, 5.0, 1.0, 0.25)
-    last_n = c2.number_input("Points for inverse-velocity fit", 5, 100, 20)
-    decay = c3.slider("Antecedent-rain decay per day", 0.5, 0.99, 0.90, 0.01)
-    c4, c5 = st.columns(2)
-    ru_per_mm = c4.number_input("r_u per mm of antecedent rain", 0.0, 0.01, 0.002, 0.0005, format="%.4f",
-                                help="Site calibration: fit to piezometer readings after storms.")
-    ru_max = c5.slider("Maximum r_u", 0.0, 0.6, 0.35, 0.01)
+        raw, t_true = demo_series()
+        st.info("Synthetic demonstration data: steady creep, then accelerating (tertiary) creep that ends in "
+                f"failure on day {t_true:.0f}. Replace with real prism or radar readings.")
+    with st.expander("Processing settings", expanded=False):
+        c1, c2, c3 = st.columns(3)
+        window = c1.number_input("Velocity window (days)", 0.25, 5.0, 1.0, 0.25,
+                                 help="Velocity = slope of a straight line fitted to the displacements in this "
+                                      "trailing window. Longer windows suppress survey noise.")
+        floor = c2.number_input("Noise floor (mm/day)", 0.0, 2.0, 0.2, 0.05,
+                                help="Velocities below this are treated as no measurable movement and left "
+                                     "out of the 1/v plot (a daily total-station survey resolves roughly "
+                                     "0.1-0.5 mm/day).")
+        last_n = c3.number_input("Points for inverse-velocity fit", 5, 100, 20)
+        c4, c5, c6 = st.columns(3)
+        decay = c4.slider("Antecedent-rain decay per day", 0.5, 0.99, 0.90, 0.01)
+        ru_per_mm = c5.number_input("r_u per mm of antecedent rain", 0.0, 0.01, 0.002, 0.0005, format="%.4f")
+        ru_max = c6.slider("Maximum r_u", 0.0, 0.6, 0.35, 0.01)
     with st.expander("Material and geometry of the monitored dump"):
         c, phi, g = material_inputs("rt")
         geom = geometry_inputs("rt")
 
     def render(raw):
-        d = process_series(raw, smooth_days=smooth)
+        d = process_series(raw, window_days=window, noise_floor=floor)
         if "rainfall_mm" in d:
             dtd = np.r_[0, np.diff(d.t_days)]
             ari = np.zeros(len(d))
@@ -683,48 +797,71 @@ elif PAGE == "Real-time monitoring":
         cur = d.iloc[-1]
         v_info = classify_velocity(cur.velocity_mm_day)
         f = inverse_velocity_forecast(d, int(last_n))
-        overall = worst(vel_to_tarp(v_info["level"]), fos_level(cur.FOS))
+        overall = worst(vel_to_tarp(v_info["level"]), det_level(cur.FOS))
         if f and f["trend"] == "accelerating" and f["days_left"] < 3:
             overall = "Red"
         k = st.columns(4)
-        k[0].metric("Velocity now", f"{cur.velocity_mm_day:.1f} mm/day", v_info["level"])
-        k[1].metric("Monitoring", v_info["frequency"], v_info["method"])
-        k[2].metric("FOS now (with rain)", f"{cur.FOS:.2f}", f"r_u {cur.r_u_est:.2f}")
+        k[0].metric("Velocity now", f"{cur.velocity_mm_day:.1f} mm/day", v_info["level"], delta_color="off")
+        k[1].metric("Monitoring", v_info["frequency"], v_info["method"], delta_color="off")
+        k[2].metric("FOS now (with rain)", f"{cur.FOS:.2f}", f"r_u {cur.r_u_est:.2f}", delta_color="off")
         if f and f["trend"] == "accelerating":
-            k[3].metric("Inverse-velocity failure forecast", f"{f['days_left']:.1f} days",
-                        f"fit R2 {f['r2']:.2f}")
+            k[3].metric("Failure forecast (1/v)", f"{f['days_left']:.1f} days", f"fit R2 {f['r2']:.2f}",
+                        delta_color="off")
         else:
             k[3].metric("Inverse-velocity trend", "Not accelerating")
-        tarp_box(overall, "unified TARP", f"Movement: {v_info['response']}")
+        tarp_box(overall, "unified TARP (worse of movement class and FOS class; Red if failure is "
+                          "forecast within 3 days)", f"Movement: {v_info['response']}")
+        # velocity against bands
+        top = max(150.0, float(d.velocity_mm_day.max()) * 1.2)
+        bands = [0.05] + [b[0] for b in VELOCITY_TARP[:-1]] + [top]
         fig = go.Figure()
-        bands = [0] + [b[0] for b in VELOCITY_TARP[:-1]] + [max(150, d.velocity_mm_day.max() * 1.1)]
         for i, b in enumerate(VELOCITY_TARP):
-            fig.add_hrect(y0=bands[i], y1=bands[i + 1], fillcolor=b[2], opacity=0.12, line_width=0)
-        fig.add_trace(go.Scatter(x=d.timestamp, y=d.velocity_mm_day, name="Velocity",
+            fig.add_hrect(y0=bands[i], y1=bands[i + 1], fillcolor=b[2], opacity=0.16, line_width=0,
+                          annotation_text=f"{b[1]} ({b[4].lower()})", annotation_position="right",
+                          annotation_font_size=11)
+        fig.add_trace(go.Scatter(x=d.timestamp, y=d.velocity_mm_day.clip(lower=0.05), name="Velocity",
                                  line=dict(color=INK, width=2)))
-        fig.update_layout(**PLOT, title="Slope velocity against movement TARP bands")
-        fig.update_yaxes(title="mm/day", type="log", range=[-1, np.log10(bands[-1])])
+        fig.update_layout(**PLOT, title="Slope velocity against the movement TARP bands", showlegend=False)
+        fig.update_layout(margin=dict(l=10, r=150, t=48, b=10))
+        fig.update_yaxes(title="mm/day (log scale)", type="log", range=[np.log10(0.05), np.log10(top)])
         st.plotly_chart(fig, **FULL)
         c1, c2 = st.columns(2)
-        fi = go.Figure(go.Scatter(x=d.t_days, y=d.inv_velocity, mode="markers",
+        dd = d.dropna(subset=["inv_velocity"])
+        fi = go.Figure(go.Scatter(x=dd.t_days, y=dd.inv_velocity, mode="markers",
                                   marker=dict(color=TEAL, size=5), name="1/v"))
         if f and f["trend"] == "accelerating":
-            tt = np.linspace(d.t_days.iloc[-int(last_n)], f["t_fail"], 50)
+            t0 = float(dd.t_days.iloc[-min(int(last_n), len(dd))])
+            tt = np.linspace(t0, f["t_fail"], 50)
             fi.add_trace(go.Scatter(x=tt, y=f["slope"] * tt + f["intercept"], name="Linear trend",
                                     line=dict(color=SLIP, dash="dash")))
-        c1.plotly_chart(fi.update_layout(**PLOT, title="Inverse velocity (Fukuzono)")
-                        .update_xaxes(title="Days").update_yaxes(title="day/mm"),
-                        **FULL)
+            fi.add_vline(x=f["t_fail"], line_color=SLIP, line_dash="dot",
+                         annotation_text=f"forecast day {f['t_fail']:.1f}")
+        if t_true is not None:
+            fi.add_vline(x=t_true, line_color="#333", line_dash="dash", annotation_text=f"true day {t_true:.0f}",
+                         annotation_position="bottom right")
+        fi.update_yaxes(title="1/v (day/mm)", range=[0, float(np.nanpercentile(dd.inv_velocity, 98)) * 1.1])
+        c1.plotly_chart(fi.update_layout(**PLOT, title="Inverse velocity (Fukuzono 1985)")
+                        .update_xaxes(title="Days since start"), **FULL)
         ff = go.Figure(go.Scatter(x=d.timestamp, y=d.FOS, line=dict(color=TEAL, width=3), name="FOS"))
+        ff.add_hline(y=FOS_MIN, line_dash="dot", line_color=TARP_COL["Green"],
+                     annotation_text=f"minimum {FOS_MIN:.2f}")
         if "rainfall_mm" in d:
             ff.add_trace(go.Bar(x=d.timestamp, y=d.rainfall_mm, name="Rain (mm)", yaxis="y2",
                                 marker_color="#7fa7c9", opacity=0.6))
-            ff.update_layout(yaxis2=dict(overlaying="y", side="right", title="Rain (mm)"))
-        c2.plotly_chart(ff.update_layout(**PLOT, title="FOS updated with rainfall"),
-                        **FULL)
+            ff.update_layout(yaxis2=dict(overlaying="y", side="right", title="Rain (mm)", showgrid=False))
+        c2.plotly_chart(ff.update_layout(**PLOT, title="FOS updated with rainfall")
+                        .update_yaxes(title="FOS"), **FULL)
+        if f and f["trend"] == "accelerating" and t_true is not None:
+            validated(f"On this synthetic tertiary-creep record the inverse-velocity forecast is day "
+                      f"{f['t_fail']:.1f} against the true failure on day {t_true:.0f} "
+                      f"(error {abs(f['t_fail'] - t_true):.1f} days).")
+        validated("Rain-to-r_u link (antecedent rainfall index x coefficient) is an assumption: fit the "
+                  "coefficient to piezometer readings after storms before relying on the FOS line.", "warn")
         st.dataframe(pd.DataFrame(VELOCITY_TARP, columns=["Upper limit (mm/day)", "Level", "Colour",
                                                           "Method", "Frequency", "Response"])
                      .drop(columns="Colour"), **FULL)
+        st.caption("Velocity bands and monitoring frequencies: slope-movement table of the NIT Rourkela "
+                   "scientific study notes supplied with this project.")
         st.session_state.last["monitoring"] = dict(velocity=float(cur.velocity_mm_day),
                                                    fos=float(cur.FOS), level=overall)
 

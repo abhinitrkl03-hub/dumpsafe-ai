@@ -56,7 +56,7 @@ def run_mc(model, geom: DumpGeometry, samples: pd.DataFrame, moisture_cfg=None):
 def exact_check(geom: DumpGeometry, df: pd.DataFrame, n=80):
     """Exact Bishop on a random sub-sample to verify the physics part of the surrogate
     (the real-data correction is deliberately excluded from this comparison)."""
-    sub = df.sample(min(n, len(df)), random_state=1)
+    sub = df.sample(min(n, len(df)), random_state=1)   # same rows as the app's sensitivity check
     exact = [bishop_fos(geom, r.c_kPa, r.phi_deg, r.gamma_kNm3, r.r_u).fos
              for r in sub.itertuples()]
     return pd.DataFrame({"surrogate": sub.FOS_physics.values, "exact_bishop": exact})

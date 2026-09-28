@@ -4,9 +4,8 @@ Generates data/physics_dataset.csv with the in-house Bishop solver (core/lem.py)
 All geometry follows DGMS / CMR 2017 Regulation 106 unless tagged otherwise:
 benches <= 30 m, deck angle <= 37.5 deg, overall slope <= 1V:1.5H (33.7 deg).
 
-Block A  "paper materials": material ranges of Sahoo et al. (2025) Table 2 and their dump
-                            heights (60-120 m), but BENCHED to Reg. 106 (the paper used
-                            unbenched single slopes up to 40 deg, which CMR 2017 does not allow).
+Block A  (Sahoo et al. 2025 published inputs, benched) is built by scripts/import_mendeley.py.
+Build order: generate_physics_data.py all -> active_learning.py -> import_mendeley.py
 Block B  "real-anchored"  : Monte-Carlo clouds around every REAL coal-OB material in
                             data/real_cases.csv (c, phi, gamma all known) plus
                             literature-range anchors (Kumar et al. 2023: gamma 14-20.7
@@ -64,7 +63,7 @@ def _noncompliant_geom(rng):
     return nd, dh, rng.uniform(3, 12), da
 
 
-def plan(n_A=1200, n_B=2400, n_C=600, seed=2026):
+def plan(n_A=0, n_B=2400, n_C=600, seed=2026):
     rng = np.random.default_rng(seed)
     rows = []
     heights = (60, 80, 100, 120)
