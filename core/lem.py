@@ -157,7 +157,7 @@ COMPOSITE_DEFAULT = False
 def bishop_fos(geom: DumpGeometry, c: float, phi: float, gamma: float,
                ru: float = 0.0, fine: bool = True, composite: bool | None = None) -> BishopResult:
     """Minimum Bishop FOS: global grid search + bench-scale searches (one per bench),
-    then two refinements around the best circle."""
+    then two refinements around every candidate; the lowest is returned."""
     xs, ys_ = geom.surface()
     yg_fun = lambda X: np.interp(X, xs, ys_)
     H, L = geom.height, geom.horizontal_extent
@@ -182,6 +182,7 @@ def bishop_fos(geom: DumpGeometry, c: float, phi: float, gamma: float,
     best = search((-0.4 * L, 1.1 * L), (0.4 * H, 2.5 * H + 0.5 * L),
                   (xe_lo, 0.66 * L), 22 if fine else 14, 12 if fine else 8)
     n = best[5]
+    cands = [best]
     # Stage 1b - bench-scale search: circles cutting a single bench (or two adjacent ones).
     # Without it a coarse global grid can miss small bench circles, which in benched dumps
     # often have the lowest FOS (found when checking against Slide2).
@@ -194,19 +195,28 @@ def bishop_fos(geom: DumpGeometry, c: float, phi: float, gamma: float,
             cand = search((xt - 0.5 * h, xcr + 1.5 * h), (ycr - 0.2 * h, ycr + 4.0 * h),
                           (max(xt - 0.6 * h, xe_lo), xt + 0.6 * f), 16 if fine else 10, 8 if fine else 5)
             n += cand[5]
-            if cand[0] < best[0]:
-                best = cand
+            cands.append(cand)
             x0, y0 = xcr + geom.berm_width, ycr
+    cands = [c_ for c_ in cands if np.isfinite(c_[0])]
+    if not cands:
+        return BishopResult(float("inf"), 0.0, 0.0, 0.0, 0.0, int(n))
+    # Stage 2 - refine EVERY candidate (global + one per bench) and keep the lowest.
+    # Benches of equal size give nearly equal FOS; refining only the best coarse one can
+    # settle on the wrong bench (e.g. the bottom bench, whose circle is cut off by the base).
+    best = min(cands, key=lambda t: t[0])
+    if fine:
+        for cand in cands:
+            F, xc, yc, R, xe, _ = cand
+            for scale in (0.30, 0.10):
+                dx, dy, de = scale * R + 2, scale * R + 2, 0.5 * scale * R + 1
+                F2, xc2, yc2, R2, xe2, n2 = search((xc - dx, xc + dx), (max(yc - dy, 1), yc + dy),
+                                                   (max(xe - de, xe_lo), xe + de), 14, 7)
+                n += n2
+                if F2 < F:
+                    F, xc, yc, R, xe = F2, xc2, yc2, R2, xe2
+            if F < best[0]:
+                best = (F, xc, yc, R, xe, 0)
     F, xc, yc, R, xe, _ = best
-    # Stage 2 - two refinements around the best circle, sized to that circle
-    if fine and np.isfinite(F):
-        for scale in (0.30, 0.10):
-            dx, dy, de = scale * R + 2, scale * R + 2, 0.5 * scale * R + 1
-            F2, xc2, yc2, R2, xe2, n2 = search((xc - dx, xc + dx), (max(yc - dy, 1), yc + dy),
-                                               (max(xe - de, xe_lo), xe + de), 14, 7)
-            n += n2
-            if F2 < F:
-                F, xc, yc, R, xe = F2, xc2, yc2, R2, xe2
     return BishopResult(float(F), float(xc), float(yc), float(R), float(xe), int(n))
 
 

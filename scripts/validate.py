@@ -66,7 +66,10 @@ pd.DataFrame(rows).to_csv(os.path.join(OUT, "v8_wcl_failure.csv"), index=False)
 # Slide2 runs by the project author (Bishop simplified, circular, composite surfaces off).
 slide2 = [dict(case="Gevra OCP material, 4 benches x 25 m, face 33 deg, berms 30 m", c_kPa=44.0,
                phi_deg=30.0, gamma_kNm3=18.63, n_decks=4, deck_height_m=25.0, deck_angle_deg=33.0,
-               berm_width_m=30.0, r_u=0.0, FOS_slide2=1.976)]
+               berm_width_m=30.0, r_u=0.0, FOS_slide2=1.976),
+          dict(case="Gevra OCP material, 3 benches x 30 m, face 32 deg, berms 30 m (SECL geometry)", c_kPa=44.0,
+               phi_deg=30.0, gamma_kNm3=18.63, n_decks=3, deck_height_m=30.0, deck_angle_deg=32.0,
+               berm_width_m=30.0, r_u=0.0, FOS_slide2=1.883)]
 for d in slide2:
     gg = DumpGeometry(d["n_decks"], d["deck_height_m"], d["deck_angle_deg"], d["berm_width_m"])
     d["FOS_bishop"] = bishop_fos(gg, d["c_kPa"], d["phi_deg"], d["gamma_kNm3"], d["r_u"]).fos

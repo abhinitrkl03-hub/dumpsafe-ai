@@ -30,7 +30,7 @@ def methods_page():
                     "- The foundation is treated as competent: circles may not pass below the dump base "
                     "(composite surfaces off, the Slide2 default). This setting was chosen after comparison "
                     "with Slide2 (V12).\n"
-                    "- Geometry: n decks of height h (optionally a lower top deck), face angle beta_deck, berm width b; "
+                    "- Geometry: n benches of height h (optionally a lower top bench), face angle beta_deck, bench width b; "
                     "overall angle = atan(H / (H cot beta_deck + (n-1) b)).")
 
     with st.expander("2. Physics surrogate: neural-network ensemble on dimensionless groups"):
@@ -231,16 +231,7 @@ def validation_page(model, physics, real_train, DATA, PLOT, FULL, badge):
                  f"SECL 3 x 30 m at 32 deg compliant: {ok_secl}; WCL 75 m unbenched compliant: {ok_wcl}",
                  ok_secl and not ok_wcl))
 
-    tab = pd.DataFrame(rows, columns=["ID", "Check", "Result", "pass"])
-    html = "<table style='width:100%;border-collapse:collapse;font-size:0.9rem'>"
-    html += "<tr style='text-align:left;border-bottom:2px solid #c9d2cf'><th>ID</th><th>Check</th><th>Result</th><th></th></tr>"
-    for r in tab.itertuples():
-        html += (f"<tr style='border-bottom:1px solid #e1e6e4'><td>{r.ID}</td><td>{r.Check}</td>"
-                 f"<td style='font-family:IBM Plex Mono,monospace'>{r.Result}</td><td>{_status(r._4)}</td></tr>")
-    st.markdown(html + "</table>", unsafe_allow_html=True)
-    st.caption("'check' does not mean wrong: it marks results that miss the target and are explained below.")
-
-    st.subheader("Details")
+    st.subheader("Checks against independent references")
     c1, c2 = st.columns(2)
     with c1:
         st.markdown("**V1 - SECL study (RS2) vs in-house Bishop**")
@@ -264,8 +255,7 @@ def validation_page(model, physics, real_train, DATA, PLOT, FULL, badge):
         st.dataframe(v7.assign(FOS_model=p7, diff_pct=e7).round(3), hide_index=True, **FULL)
     st.markdown("**V10 - WCL failure.** With peak strength Bishop gives 1.07 (stable), with residual strength "
                 "0.72; the dump actually failed and the source's FEM analysis gave 0.80. Field strength at failure "
-                "lies between peak and residual, the expected behaviour of a strain-softening spoil. This is why "
-                "back-analysis of failures is useful for judging lab strengths.")
+                "lies between peak and residual, the expected behaviour of a strain-softening spoil.")
     st.subheader("What is not validated (assumptions)")
     st.markdown(
         badge("assumption", "warn") + "Moisture softening coefficients k_c, k_phi (off by default) and the saturation "

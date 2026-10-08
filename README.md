@@ -100,7 +100,7 @@ were re-solved with the corrected solver (`scripts/resolve_dataset.py`).
 
 | ID | Check | Result |
 |---|---|---|
-| V1 | Bishop solver vs SECL study FOS (RS2), 8 dumps | MAPE 2.0 %, bias -2.0 % |
+| V1 | Bishop solver vs SECL study FOS (RS2), 8 dumps | MAPE 2.1 %, bias -2.1 % |
 | V2 | Bishop solver vs 2,250 published Slide/Janbu cases | offset +3.56 % (SD 1.04 %), R² 0.999 |
 | V3 | Bishop solver vs closed-form infinite slope (c = 0) | max difference 0.6 % |
 | V4 | Surrogate vs 250 fresh exact cases | MAPE 0.71 %, R² 0.999 |
@@ -112,7 +112,7 @@ were re-solved with the corrected solver (`scripts/resolve_dataset.py`).
 | V9 | Moisture path vs exact solver | max difference 1.6 % |
 | V10 | WCL failure (75 m, 43°) | peak strength 1.07 > reported 0.80 > residual strength 0.72: field strength at failure lies between peak and residual |
 | V11 | Reg. 106 check on known dumps | SECL compliant, WCL unbenched not compliant |
-| V12 | Bishop solver vs the author's Slide2 run (Gevra, 4 × 25 m, 33°, 30 m berms) | 1.981 vs 1.976 (+0.25 %) |
+| V12 | Bishop solver vs the author's Slide2 runs (Gevra material) | 4 × 25 m, 33°: 1.974 vs 1.976; 3 × 30 m, 32°: 1.882 vs 1.883 (within 0.15 %) |
 
 Not validated (stated as assumptions in the app): moisture softening and the saturation threshold, the
 rain-to-r_u coefficient, and the single-site FLAC/FEM corrections. The velocity TARP bands, the acceptance
@@ -219,13 +219,9 @@ model, reporting PoF with a binomial confidence interval and the lognormal relia
 
 ## Pages
 
-Overview · Data and sources · Model lab · Predict and TARP · Monte Carlo reliability ·
-Moisture and rainfall · Design envelope · Back-analysis of failures · Real-time monitoring · Report
-
-Real-time monitoring accepts a CSV (timestamp, displacement_mm, optional rainfall_mm and r_u),
-an uploaded file or a published CSV link that refreshes automatically (for example Google Sheets
-→ File → Share → Publish to web → CSV). Velocity bands follow the monitoring-frequency table
-from the scientific study notes. The inverse-velocity forecast follows Fukuzono (1985).
+Overview · Data and sources · Methods and equations · Validation · Model lab · Predict and TARP (with a
+simple moisture and water section) · Monte Carlo reliability · Design envelope · Real-time monitoring.
+The prediction interval is fixed at 90 % coverage.
 
 ## Deploy on a server
 
