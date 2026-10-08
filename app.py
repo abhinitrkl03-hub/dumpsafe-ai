@@ -205,25 +205,35 @@ def tarp_box(level, title, detail=""):
 
 
 def profile_fig(geom: DumpGeometry, res=None, title="", fos=None):
+    """Section drawn like a Slide2 model: dump polygon from the toe (0, 0) to the crest, base at y = 0,
+    1:1 scale, zoomed to the dump. Slip circle, its centre and the radii to its end points
+    are drawn the way Slide2 shows the critical surface."""
     xs, ys = geom.surface()
     L, H = geom.horizontal_extent, geom.height
-    x0, x1 = -0.35 * L - 10, L + 0.45 * L + 20
-    X = np.linspace(x0, x1, 400); Y = np.interp(X, xs, ys)
+    xr = L + max(0.25 * L, 30.0)                     # right edge of the model
+    m = (xs >= 0) & (xs <= L)
+    px = np.r_[0.0, xs[m], L, xr, xr, 0.0]
+    py = np.r_[0.0, ys[m], H, H, 0.0, 0.0]
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=np.r_[X, X[::-1]], y=np.r_[Y, np.full_like(X, -0.08 * H)],
-                             fill="toself", fillcolor=OB, line=dict(color=OB_LINE, width=2),
+    fig.add_trace(go.Scatter(x=px, y=py, fill="toself", fillcolor=OB, line=dict(color=OB_LINE, width=2),
                              name="Dump", hoverinfo="skip"))
-    fig.add_hrect(y0=-0.18 * H, y1=-0.08 * H, fillcolor="#6f6a60", opacity=0.6, line_width=0)
+    y_top = H
     if res is not None and np.isfinite(res.fos):
         ax, ay = slip_arc(res, geom)
-        fig.add_trace(go.Scatter(x=ax, y=ay, mode="lines", line=dict(color=SLIP, width=3, dash="dash"),
-                                 name=f"Critical slip (Bishop FOS {res.fos:.2f})"))
-        fig.add_trace(go.Scatter(x=[res.xc], y=[res.yc], mode="markers",
-                                 marker=dict(color=SLIP, size=7, symbol="x"), name="Slip centre"))
-    fig.update_layout(**PLOT, title=title, showlegend=True,
-                      legend=dict(orientation="h", y=-0.15))
-    fig.update_yaxes(scaleanchor="x", scaleratio=1, title="Elevation (m)")
-    fig.update_xaxes(title="Distance (m)", range=[x0, x1])
+        fig.add_trace(go.Scatter(x=ax, y=ay, mode="lines", line=dict(color=SLIP, width=3),
+                                 name=f"Critical slip circle (Bishop FOS {res.fos:.3f})"))
+        if len(ax):
+            fig.add_trace(go.Scatter(x=[ax[0], res.xc, ax[-1]], y=[ay[0], res.yc, ay[-1]], mode="lines",
+                                     line=dict(color=SLIP, width=1), showlegend=False, hoverinfo="skip"))
+        fig.add_trace(go.Scatter(x=[res.xc], y=[res.yc], mode="markers+text", text=[f"{res.fos:.3f}"],
+                                 textposition="top center", marker=dict(color=SLIP, size=7, symbol="x"),
+                                 name="Slip centre"))
+        y_top = max(H, res.yc)
+    pad = 0.08 * max(xr, y_top)
+    fig.update_layout(**PLOT, title=title, showlegend=True, legend=dict(orientation="h", y=-0.18))
+    fig.update_xaxes(title="Distance from toe (m)", range=[-pad, xr + pad], constrain="domain")
+    fig.update_yaxes(title="Elevation above dump base (m)", range=[-pad, y_top + pad],
+                     scaleanchor="x", scaleratio=1, constrain="domain")
     return fig
 
 

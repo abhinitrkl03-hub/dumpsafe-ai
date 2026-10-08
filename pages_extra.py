@@ -24,10 +24,12 @@ def methods_page():
                  r"\qquad u_i=r_u\,\gamma\,h_i")
         st.markdown("- Solved by fixed-point iteration (tolerance 1e-4, at most 40 iterations); "
                     "m_alpha is floored at 0.2, the usual numerical guard.\n"
-                    "- 140 slices per circle. Circles are searched on a coarse grid of centres and exit points, "
-                    "then refined around the best circle (about 6,000-7,000 circles per case).\n"
-                    "- The foundation is treated as competent: a circle that would dip below the base slides along "
-                    "the base (composite surface).\n"
+                    "- 140 slices per circle. Circles are searched (i) on a global grid of centres and exit points, "
+                    "(ii) on a separate grid for every bench, so that small bench-scale circles are not missed, and "
+                    "(iii) in two refinements around the best circle (about 10,000 circles per case).\n"
+                    "- The foundation is treated as competent: circles may not pass below the dump base "
+                    "(composite surfaces off, the Slide2 default). This setting was chosen after comparison "
+                    "with Slide2 (V12).\n"
                     "- Geometry: n decks of height h (optionally a lower top deck), face angle beta_deck, berm width b; "
                     "overall angle = atan(H / (H cot beta_deck + (n-1) b)).")
 
@@ -215,6 +217,13 @@ def validation_page(model, physics, real_train, DATA, PLOT, FULL, badge):
     pk, rs, rep = v8.FOS_bishop.values
     rows.append(("V10", "WCL failure (75 m, 43 deg) bracketed by peak and residual strength",
                  f"peak {pk:.2f} > reported {rep:.2f} > residual {rs:.2f}", pk > rep > rs))
+    # V12 Slide2
+    p12 = os.path.join(V, "v12_slide2.csv")
+    if os.path.exists(p12):
+        v12 = pd.read_csv(p12)
+        rows.append(("V12", "Bishop solver vs author's Slide2 runs (Bishop, circular)",
+                     "; ".join(f"{r.FOS_bishop:.3f} vs {r.FOS_slide2:.3f} ({r.diff_pct:+.1f} %)" for r in v12.itertuples()),
+                     bool((v12.diff_pct.abs() < 2).all())))
     # V11 DGMS
     ok_secl = dgms_check(3, 30, 32, 30)[0]
     ok_wcl = dgms_check(1, 75, 43, 0)[0]

@@ -88,22 +88,31 @@ column gives (a) independent verification of the solver in the software the SECL
 the SECL correction: all 8 SECL dumps share one geometry. Add the finished rows to
 `data/real_cases.csv` with study = "NIT Rourkela SECL study (RS2)" and a new site name for each.
 
-## Validation (V1-V11, shown live on the app's Validation page)
+## Solver settings (matched to Slide2)
+
+Bishop simplified, circular surfaces, 140 slices; global search + a separate search on every bench + two
+refinements; circles may not pass below the dump base (composite surfaces off, the Slide2 default). The
+bench search and composite setting were added after comparison with a Slide2 run, which showed the old
+search could miss single-bench circles (FOS 2.001 vs Slide2 1.976; now 1.981). All 6,845 training labels
+were re-solved with the corrected solver (`scripts/resolve_dataset.py`).
+
+## Validation (V1-V12, shown live on the app's Validation page)
 
 | ID | Check | Result |
 |---|---|---|
-| V1 | Bishop solver vs SECL study FOS (RS2), 8 dumps | MAPE 2.2 %, bias -2.2 % |
-| V2 | Bishop solver vs 2,250 published Slide/Janbu cases | offset +3.59 % (SD 1.02 %), R² 0.999 |
+| V1 | Bishop solver vs SECL study FOS (RS2), 8 dumps | MAPE 2.0 %, bias -2.0 % |
+| V2 | Bishop solver vs 2,250 published Slide/Janbu cases | offset +3.56 % (SD 1.04 %), R² 0.999 |
 | V3 | Bishop solver vs closed-form infinite slope (c = 0) | max difference 0.6 % |
-| V4 | Surrogate vs 250 fresh exact cases | MAPE 0.81 %, R² 0.999 |
+| V4 | Surrogate vs 250 fresh exact cases | MAPE 0.71 %, R² 0.999 |
 | V5 | Surrogate 20 % hold-out | MAPE 0.74 %, R² 0.999 |
 | V6 | Physics direction (FOS up with c, φ; down with H, r_u) | worst violation 0.7 % of sweeps |
-| V7 | Leave-one-site-out, SECL (RS2) | hybrid 0.5 %, physics 2.1 %, rank agreement +0.98 |
-| V7 | Leave-one-site-out, Jagannathpur (FLAC) | 18.3 % (single-site study, offset cannot be learned); rank agreement +0.97, so the physics reproduces the trend with height and angle |
-| V8 | Monte Carlo vs 300 exact runs (Gevra) | mean 1.815 vs 1.813, SD 0.211 vs 0.214 |
+| V7 | Leave-one-site-out, SECL (RS2) | hybrid 0.45 %, physics 1.9 % |
+| V7 | Leave-one-site-out, Jagannathpur (FLAC) | 16.8 % (single-site study, offset cannot be learned); rank agreement +0.97, so the physics reproduces the trend with height and angle |
+| V8 | Monte Carlo vs 300 exact runs (Gevra) | mean 1.823 vs 1.818 |
 | V9 | Moisture path vs exact solver | max difference 1.6 % |
 | V10 | WCL failure (75 m, 43°) | peak strength 1.07 > reported 0.80 > residual strength 0.72: field strength at failure lies between peak and residual |
 | V11 | Reg. 106 check on known dumps | SECL compliant, WCL unbenched not compliant |
+| V12 | Bishop solver vs the author's Slide2 run (Gevra, 4 × 25 m, 33°, 30 m berms) | 1.981 vs 1.976 (+0.25 %) |
 
 Not validated (stated as assumptions in the app): moisture softening and the saturation threshold, the
 rain-to-r_u coefficient, and the single-site FLAC/FEM corrections. The velocity TARP bands, the acceptance

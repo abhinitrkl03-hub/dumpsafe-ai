@@ -10,6 +10,7 @@ shown are always for the model actually deployed.
   V6  300 exact Monte Carlo realisations (Gevra material)                -> v6_mc_exact.csv
   V7  Exact FOS along the moisture path                                  -> v7_moisture_exact.csv
   V8  WCL failed dump: FOS with peak and residual strengths              -> v8_wcl_failure.csv
+  V12 Bishop solver vs the author's own Slide2 runs                       -> v12_slide2.csv
 Run: python scripts/validate.py   (about 2 minutes)
 """
 import os, sys, time
@@ -61,4 +62,14 @@ rows = [dict(strength="peak (c 88.6 kPa, phi 24.6 deg)", FOS_bishop=bishop_fos(g
         dict(strength="residual (c 36.5 kPa, phi 21.5 deg)", FOS_bishop=bishop_fos(gw, 36.5, 21.5, 24.4).fos),
         dict(strength="reported by source (FEM-SRM)", FOS_bishop=0.80)]
 pd.DataFrame(rows).to_csv(os.path.join(OUT, "v8_wcl_failure.csv"), index=False)
+# V12 --------------------------------------------------------------------------------
+# Slide2 runs by the project author (Bishop simplified, circular, composite surfaces off).
+slide2 = [dict(case="Gevra OCP material, 4 benches x 25 m, face 33 deg, berms 30 m", c_kPa=44.0,
+               phi_deg=30.0, gamma_kNm3=18.63, n_decks=4, deck_height_m=25.0, deck_angle_deg=33.0,
+               berm_width_m=30.0, r_u=0.0, FOS_slide2=1.976)]
+for d in slide2:
+    gg = DumpGeometry(d["n_decks"], d["deck_height_m"], d["deck_angle_deg"], d["berm_width_m"])
+    d["FOS_bishop"] = bishop_fos(gg, d["c_kPa"], d["phi_deg"], d["gamma_kNm3"], d["r_u"]).fos
+    d["diff_pct"] = (d["FOS_bishop"] - d["FOS_slide2"]) / d["FOS_slide2"] * 100
+pd.DataFrame(slide2).to_csv(os.path.join(OUT, "v12_slide2.csv"), index=False)
 print(f"validation references written in {time.time()-t0:.0f}s")
