@@ -220,6 +220,69 @@ def bishop_fos(geom: DumpGeometry, c: float, phi: float, gamma: float,
     return BishopResult(float(F), float(xc), float(yc), float(R), float(xe), int(n))
 
 
+def bench_points(geom: DumpGeometry):
+    """Toe and crest coordinates of every bench, bottom to top: [(x_toe, y_toe, x_crest, y_crest, h), ...]."""
+    cot = 1.0 / np.tan(np.radians(geom.deck_angle))
+    out, x0, y0 = [], 0.0, 0.0
+    for h in geom.deck_heights():
+        out.append((x0, y0, x0 + h * cot, y0 + h, h))
+        x0, y0 = x0 + h * cot + geom.berm_width, y0 + h
+    return out
+
+
+def bench_analysis(geom: DumpGeometry, c: float, phi: float, gamma: float, ru: float = 0.0,
+                   composite: bool | None = None):
+    """Critical slip circle for EACH bench: the lowest-FOS circle whose exit (toe end) lies on that
+    bench - on its face or on the berm just in front of its toe. The circle may run back through
+    the benches above, so overall (multi-bench) failures are included in the bench where they exit.
+    Returns a list of BishopResult (bottom bench first). Used to decide which bench needs
+    strengthening, as in a Slide2 / RS2 bench-by-bench check."""
+    xs, ys_ = geom.surface()
+    yg_fun = lambda X: np.interp(X, xs, ys_)
+    H, L = geom.height, geom.horizontal_extent
+    composite = COMPOSITE_DEFAULT if composite is None else composite
+    xe_lo = -0.25 * H if composite else 0.0
+
+    def search(xc_rng, yc_rng, xe_rng, n_c, n_e):
+        XC, YC, XE = np.meshgrid(np.linspace(*xc_rng, n_c), np.linspace(*yc_rng, n_c),
+                                 np.linspace(*xe_rng, n_e), indexing="ij")
+        XC, YC, XE = XC.ravel(), YC.ravel(), XE.ravel()
+        R = np.hypot(XC - XE, YC - yg_fun(XE))
+        keep = YC > yg_fun(XE) + 1.0
+        XC, YC, XE, R = XC[keep], YC[keep], XE[keep], R[keep]
+        if XC.size == 0:
+            return np.inf, 0.0, 0.0, 0.0, 0.0, 0
+        F = _bishop_batch(XC, YC, R, XE, xs, yg_fun, c, phi, gamma, ru, composite=composite)
+        i = int(np.argmin(F))
+        return F[i], XC[i], YC[i], R[i], XE[i], F.size
+
+    results = []
+    for k, (xt, yt, xcr, ycr, h) in enumerate(bench_points(geom)):
+        lo = xe_lo if k == 0 else xt - 0.5 * geom.berm_width
+        hi = xcr - 0.05 * (xcr - xt)
+        exit_rng = (max(lo, xe_lo), hi)
+        cands = [search((xt - 0.5 * h, xcr + 2.0 * h), (ycr - 0.2 * h, ycr + 4.0 * h), exit_rng, 18, 10),
+                 search((xt - 0.3 * L, xt + 1.1 * L), (ycr, H + 2.0 * H + 0.5 * L), exit_rng, 18, 8)]
+        n = sum(c_[5] for c_ in cands)
+        best = min(cands, key=lambda t: t[0])
+        for cand in cands:
+            F, xc, yc, R, xe, _ = cand
+            if not np.isfinite(F):
+                continue
+            for scale in (0.30, 0.10, 0.03):
+                dx, dy, de = scale * R + 1, scale * R + 1, 0.5 * scale * R + 0.5
+                F2, xc2, yc2, R2, xe2, n2 = search((xc - dx, xc + dx), (max(yc - dy, 1), yc + dy),
+                                                   (max(xe - de, exit_rng[0]), min(xe + de, exit_rng[1])), 14, 7)
+                n += n2
+                if F2 < F:
+                    F, xc, yc, R, xe = F2, xc2, yc2, R2, xe2
+            if F < best[0]:
+                best = (F, xc, yc, R, xe, 0)
+        F, xc, yc, R, xe, _ = best
+        results.append(BishopResult(float(F), float(xc), float(yc), float(R), float(xe), int(n)))
+    return results
+
+
 def slip_arc(res: BishopResult, geom: DumpGeometry, n=200):
     """Coordinates of the critical slip surface for plotting."""
     xs, ys_ = geom.surface()

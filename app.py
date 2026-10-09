@@ -8,9 +8,12 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
+import plotly.colors as px_colors
 import streamlit as st
 
-from core.lem import DumpGeometry, bishop_fos, slip_arc
+from core.lem import DumpGeometry, bishop_fos, slip_arc, bench_analysis, bench_points
+from core.slide2 import (Slide2Settings, search as slide2_search, bench_by_bench, bench_limits,
+                         default_limits, Slide2Model, METHOD_NAMES)
 from core.models import FOSModel, FEATURES, LABELS, METHOD_LABELS, method_class, engineer, metrics
 from core.moisture import moisture_state, saturation_moisture
 from core.montecarlo import sample_inputs, run_mc, reliability, exact_check, rank_sensitivity
@@ -203,46 +206,215 @@ def tarp_box(level, title, detail=""):
                 f"</div>", unsafe_allow_html=True)
 
 
-def profile_fig(geom: DumpGeometry, res=None, title="", fos=None, material=None):
-    """Section drawn like a Slide2 model: dump polygon from the toe (0, 0) to the crest, base at y = 0,
-    1:1 scale, zoomed to the dump. Slip circle, its centre and the radii to its end points
-    are drawn the way Slide2 shows the critical surface."""
+def _arc_xy(xc, yc, R, geom, x0=None, x1=None, n=160):
+    """Lower arc of a circle between its exit and entry on the slope (for drawing)."""
+    mdl = Slide2Model(geom)
+    if x0 is None:
+        e, en, _ = mdl.intersections(np.array([xc]), np.array([yc]), np.array([R]))
+        x0, x1 = e[0], en[0]
+    X = np.linspace(x0, x1, n)
+    return X, yc - np.sqrt(np.clip(R ** 2 - (X - xc) ** 2, 0, None))
+
+
+def profile_fig(geom: DumpGeometry, res=None, title="", fos=None, material=None, benches=None,
+                surfaces=0, limits=None):
+    """Section drawn like a Slide2 model: external boundary from the toe (0, 0), base y = 0, 1:1 scale.
+    Nothing is written on the dump. As in Slide2: the global minimum surface is bold, with its centre,
+    the two radius lines and the FOS label above the slope; optionally the lowest `surfaces` valid
+    surfaces are drawn thin and colour-coded by FOS ("display all surfaces"); slope limits are marked
+    on the slope surface. If `benches` (one result per bench) is given, every bench's critical circle is
+    drawn dotted and the most critical bench is the global minimum."""
     xs, ys = geom.surface()
     L, H = geom.horizontal_extent, geom.height
-    xr = L + max(0.25 * L, 30.0)                     # right edge of the model
-    m = (xs >= 0) & (xs <= L)
-    px = np.r_[0.0, xs[m], L, xr, xr, 0.0]
-    py = np.r_[0.0, ys[m], H, H, 0.0, 0.0]
+    mdl = Slide2Model(geom)
+    xr = mdl.x_right
+    px = np.r_[mdl.sx, xr, 0.0]
+    py = np.r_[mdl.sy, 0.0, 0.0]
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=px, y=py, fill="toself", fillcolor=OB, line=dict(color=OB_LINE, width=2),
                              name="Dump", hoverinfo="skip"))
+    if benches:
+        res = min(benches, key=lambda r_: r_.fos)
+    if surfaces and res is not None and hasattr(res, "lowest") and res.all_fos.size:
+        XC, YC, RR, FF = res.lowest(int(surfaces))
+        lo_f, hi_f = float(FF.min()), float(max(FF.max(), FF.min() + 1e-6))
+        for j in np.argsort(FF)[::-1]:
+            ax, ay = _arc_xy(XC[j], YC[j], RR[j], geom)
+            t = (FF[j] - lo_f) / (hi_f - lo_f)
+            col = px_colors.sample_colorscale("Turbo", [0.15 + 0.8 * t])[0]
+            fig.add_trace(go.Scatter(x=ax, y=ay, mode="lines", line=dict(color=col, width=0.8),
+                                     showlegend=False, hovertemplate=f"FOS {FF[j]:.3f}<extra></extra>"))
+        fig.add_trace(go.Scatter(x=[None], y=[None], mode="markers", name=f"Lowest {len(FF)} surfaces "
+                                 f"(FOS {lo_f:.3f} - {hi_f:.3f}, blue = lowest)",
+                                 marker=dict(color=FF, colorscale="Turbo", cmin=lo_f, cmax=hi_f, size=6)))
+    if benches:
+        for k, r_ in enumerate(benches):
+            if r_ is res or not np.isfinite(r_.fos):
+                continue
+            ax, ay = slip_arc(r_, geom)
+            fig.add_trace(go.Scatter(x=ax, y=ay, mode="lines", line=dict(color="#3d3426", width=1.5, dash="dot"),
+                                     name=f"Bench {k + 1} circle (FOS {r_.fos:.3f})", hoverinfo="name"))
+    for lim in ([limits] if limits else []):
+        pts = sorted(set([lim[0][0], lim[0][1], lim[1][0], lim[1][1]]))
+        fig.add_trace(go.Scatter(x=pts, y=mdl.yg(np.array(pts)), mode="markers", name="Slope limits",
+                                 marker=dict(symbol="triangle-down", size=11, color="#1f4e79"),
+                                 hovertemplate="limit x = %{x:.1f} m<extra></extra>"))
     y_top = H
     if res is not None and np.isfinite(res.fos):
         ax, ay = slip_arc(res, geom)
-        fig.add_trace(go.Scatter(x=ax, y=ay, mode="lines", line=dict(color=SLIP, width=3),
-                                 name=f"Critical slip circle (Bishop FOS {res.fos:.3f})"))
+        lab = "Global minimum slip circle"
+        if benches:
+            lab += f" - bench {benches.index(res) + 1}"
+        fig.add_trace(go.Scatter(x=ax, y=ay, mode="lines", line=dict(color=SLIP, width=3.5),
+                                 name=f"{lab} (FOS {res.fos:.3f})"))
         if len(ax):
             fig.add_trace(go.Scatter(x=[ax[0], res.xc, ax[-1]], y=[ay[0], res.yc, ay[-1]], mode="lines",
                                      line=dict(color=SLIP, width=1), showlegend=False, hoverinfo="skip"))
         fig.add_trace(go.Scatter(x=[res.xc], y=[res.yc], mode="markers+text", text=[f"{res.fos:.3f}"],
                                  textposition="top center", marker=dict(color=SLIP, size=7, symbol="x"),
-                                 name="Slip centre"))
-        y_top = max(H, res.yc)
+                                 name="Slip centre", textfont=dict(color=SLIP, size=13)))
+        y_top = max(H, res.yc + 0.08 * H)
     pad = 0.08 * max(xr, y_top)
-    if material is not None:                       # material legend, like Slide2's
-        c_, p_, g_ = material[:3]
-        ru_ = material[3] if len(material) > 3 else 0.0
-        fig.add_annotation(x=xr, y=0.10 * H, xanchor="right", yanchor="bottom", showarrow=False, align="left",
-                           bgcolor="rgba(255,255,255,0.88)", bordercolor=OB_LINE, borderwidth=1, borderpad=6,
-                           font=dict(size=12, color=INK),
-                           text=(f"<b>Dump material (Mohr-Coulomb)</b><br>Unit weight &gamma; = {g_:.2f} kN/m&sup3;"
-                                 f"<br>Cohesion c = {c_:.1f} kPa<br>Friction angle &phi; = {p_:.1f}&deg;"
-                                 f"<br>Pore-pressure ratio r<sub>u</sub> = {ru_:.2f}"))
     fig.update_layout(**PLOT, title=title, showlegend=True, legend=dict(orientation="h", y=-0.18))
     fig.update_xaxes(title="Distance from toe (m)", range=[-pad, xr + pad], constrain="domain")
     fig.update_yaxes(title="Elevation above dump base (m)", range=[-pad, y_top + pad],
                      scaleanchor="x", scaleratio=1, constrain="domain")
     return fig
+
+
+def bench_table(geom: DumpGeometry, benches):
+    """Bench-by-bench check: critical FOS of each bench, ranked, with circle coordinates
+    (so the same circle can be entered in Slide2 as a single surface)."""
+    rows = []
+    worst = min(r_.fos for r_ in benches)
+    for k, ((xt, yt, xcr, ycr, h), r_) in enumerate(zip(bench_points(geom), benches)):
+        ax, ay = slip_arc(r_, geom)
+        rows.append({"Bench": f"{k + 1}" + (" (bottom)" if k == 0 else " (top)" if k == len(benches) - 1 else ""),
+                     "Elevation (m)": f"{yt:.0f} - {ycr:.0f}",
+                     "Critical FOS": round(r_.fos, 3),
+                     "Status": ("most critical" if abs(r_.fos - worst) < 1e-9 else
+                                f"+{(r_.fos - worst) / worst * 100:.1f} % above most critical"),
+                     "Meets minimum": "yes" if r_.fos >= FOS_MIN else "NO",
+                     "Centre x, y (m)": f"{r_.xc:.1f}, {r_.yc:.1f}",
+                     "Radius (m)": round(r_.radius, 1),
+                     "Exit x, y (m)": f"{ax[0]:.1f}, {ay[0]:.1f}" if len(ax) else "-",
+                     "Entry x, y (m)": f"{ax[-1]:.1f}, {ay[-1]:.1f}" if len(ax) else "-",
+                     "Surfaces (valid / generated)": f"{getattr(r_, 'n_valid', 0):,} / {r_.n_circles:,}"})
+    return pd.DataFrame(rows)
+
+
+def slide2_settings_table(stg: Slide2Settings, scope: str, n_gen: int, n_valid: int):
+    """Project-settings summary in the order a Slide2 user sets them up."""
+    meth = METHOD_NAMES[stg.method]
+    detail = {"auto_refine": f"{stg.divisions} divisions along slope, {stg.circles_per_division} circles per "
+                             f"division, {stg.iterations} iterations, {int(stg.keep_fraction * 100)} % of divisions "
+                             "kept for the next iteration",
+              "grid": f"{stg.grid_intervals[0]} x {stg.grid_intervals[1]} grid intervals, radius increment "
+                      f"{stg.radius_increment}",
+              "slope": f"{stg.n_surfaces:,} random surfaces"}[stg.method]
+    return pd.DataFrame([
+        ["1 Model", "External boundary: dump section from the toe (0, 0), base y = 0, right boundary behind the crest"],
+        ["2 Materials", "Mohr-Coulomb (c, phi, unit weight); water by r_u"],
+        ["3 Analysis method", f"Bishop simplified, {stg.n_slices} slices, tolerance {stg.tolerance}, "
+                              f"max {stg.max_iterations} iterations"],
+        ["4 Surface type / search", f"Circular, {meth}: {detail}"],
+        ["5 Slope limits", scope],
+        ["6 Surface checks", "rejected if < 2 slope intersections, below the dump base, outside the slope limits, "
+                             "or not converged"],
+        ["7 Result", f"{n_valid:,} valid of {n_gen:,} surfaces generated; global minimum shown in red"],
+    ], columns=["Step (as in Slide2)", "Setting used"])
+
+
+def show_bench_check(geom, benches):
+    st.markdown("**Bench-by-bench check** (lowest-FOS circle exiting on each bench; circles may run back "
+                "through the benches above)")
+    st.dataframe(bench_table(geom, benches), hide_index=True, **FULL)
+    fs = sorted((r_.fos, k + 1) for k, r_ in enumerate(benches))
+    if len(fs) > 1 and (fs[1][0] - fs[0][0]) / fs[0][0] < 0.005:
+        st.caption(f"Bench {fs[0][1]} is the most critical, but bench {fs[1][1]} is within 0.5 %: treat both as "
+                   "equally critical when planning strengthening or monitoring.")
+    else:
+        st.caption(f"Bench {fs[0][1]} is the most critical: prioritise it for strengthening, drainage and "
+                   "monitoring prisms.")
+
+
+def search_inputs(key, geom):
+    """Slip-surface settings, set up in the same order as in Slide2."""
+    mdl = Slide2Model(geom)
+    c1, c2, c3 = st.columns(3)
+    meth = c1.selectbox("Search method", list(METHOD_NAMES), format_func=METHOD_NAMES.get, key=f"{key}sm",
+                        help="Same three circular search methods as Slide2. Auto refine search is the "
+                             "Slide2 default and the most reliable for benched dumps.")
+    scope = c2.selectbox("Slope limits", ["Bench by bench", "Whole slope", "Custom limits"], key=f"{key}sl",
+                         help="Bench by bench = one search per bench with the slope limits moved onto that "
+                              "bench (exit on that bench). Whole slope = Slide2 default limits.")
+    shown = c3.number_input("Lowest surfaces to display", 0, 300, 0, 10, key=f"{key}ns",
+                            help="0 = global minimum only. Otherwise the lowest surfaces are drawn colour-coded "
+                                 "by FOS, like 'display all surfaces' in Slide2.")
+    stg = Slide2Settings(method=meth)
+    lim = None
+    if scope == "Custom limits":
+        a1, a2, a3, a4 = st.columns(4)
+        e0 = a1.number_input("Exit from x (m)", 0.0, float(mdl.x_right), 0.0, key=f"{key}e0")
+        e1 = a2.number_input("Exit to x (m)", 0.0, float(mdl.x_right), float(geom.horizontal_extent), key=f"{key}e1")
+        n0 = a3.number_input("Entry from x (m)", 0.0, float(mdl.x_right), 0.0, key=f"{key}n0")
+        n1 = a4.number_input("Entry to x (m)", 0.0, float(mdl.x_right), float(mdl.x_right), key=f"{key}n1")
+        lim = ((min(e0, e1), max(e0, e1)), (min(n0, n1), max(n0, n1)))
+    with st.expander("Analysis and search settings (Slide2 defaults)"):
+        b1, b2, b3 = st.columns(3)
+        stg.n_slices = int(b1.number_input("Number of slices", 10, 200, 50, key=f"{key}sn"))
+        stg.tolerance = float(b2.number_input("Tolerance", 0.0001, 0.05, 0.005, 0.0005, format="%.4f", key=f"{key}tol"))
+        stg.max_iterations = int(b3.number_input("Maximum iterations", 10, 500, 75, key=f"{key}it"))
+        if meth == "auto_refine":
+            d1, d2, d3, d4 = st.columns(4)
+            stg.divisions = int(d1.number_input("Divisions along slope", 5, 60, 20, key=f"{key}dv"))
+            stg.circles_per_division = int(d2.number_input("Circles per division", 2, 40, 10, key=f"{key}cd"))
+            stg.iterations = int(d3.number_input("Number of iterations", 1, 30, 10, key=f"{key}ni"))
+            stg.keep_fraction = d4.number_input("Divisions kept for next iteration (%)", 10, 90, 50, key=f"{key}kf") / 100
+        elif meth == "grid":
+            d1, d2, d3 = st.columns(3)
+            stg.grid_intervals = (int(d1.number_input("Grid intervals in x", 5, 60, 20, key=f"{key}gx")),
+                                  int(d2.number_input("Grid intervals in y", 5, 60, 20, key=f"{key}gy")))
+            stg.radius_increment = int(d3.number_input("Radius increment", 2, 50, 10, key=f"{key}ri"))
+        else:
+            stg.n_surfaces = int(st.number_input("Number of surfaces", 500, 50000, 5000, 500, key=f"{key}nsf"))
+        stg.min_depth = float(st.number_input("Minimum slip depth filter (m, 0 = off)", 0.0, 30.0, 0.0, key=f"{key}md"))
+    return stg, scope, lim, int(shown)
+
+
+def run_search(geom, c, phi, gamma, ru, stg, scope, lim):
+    """Returns (global-minimum result, per-bench results or None, limits drawn, scope text)."""
+    if scope == "Bench by bench":
+        benches = bench_by_bench(geom, c, phi, gamma, ru, stg)
+        res = min(benches, key=lambda r_: r_.fos)
+        txt = ("Bench by bench: for each bench the exit must lie on that bench (its face or the half bench width "
+               "in front of its toe); the entry may lie anywhere above, so multi-bench circles are included")
+        return res, benches, res.limits, txt
+    lim = lim or default_limits(geom)
+    res = slide2_search(geom, c, phi, gamma, ru, stg, lim)
+    txt = (f"exit between x = {lim[0][0]:.1f} and {lim[0][1]:.1f} m, entry between x = {lim[1][0]:.1f} and "
+           f"{lim[1][1]:.1f} m" + (" (Slide2 default: whole slope)" if scope == "Whole slope" else ""))
+    return res, None, lim, txt
+
+
+def show_search_result(geom, c, phi, gamma, ru, stg, scope, lim, shown, title_prefix=""):
+    with st.spinner("Generating and checking slip surfaces (Slide2 procedure) ..."):
+        res, benches, lim_d, txt = run_search(geom, c, phi, gamma, ru, stg, scope, lim)
+    if not np.isfinite(res.fos):
+        st.error("No valid slip surface was found inside these slope limits. Widen the limits.")
+        return None
+    allr = benches or [res]
+    n_gen = sum(r_.n_circles for r_ in allr); n_val = sum(r_.n_valid for r_ in allr)
+    st.plotly_chart(profile_fig(geom, res, title=f"{title_prefix}Bishop simplified, {METHOD_NAMES[stg.method]}: "
+                                f"global minimum FOS {res.fos:.3f}", benches=benches, surfaces=shown,
+                                limits=None if benches else lim_d), **FULL)
+    if getattr(res, "edge_warning", False):
+        st.warning("The minimum lies on the edge of the search grid (Slide2 gives the same warning). The grid was "
+                   "extended once; try Auto refine search to confirm.")
+    if benches:
+        show_bench_check(geom, benches)
+    st.dataframe(slide2_settings_table(stg, txt, n_gen, n_val), hide_index=True, **FULL)
+    return res, benches
 
 
 def geometry_inputs(key, default=(3, 30.0, 32.0, 30.0)):
@@ -338,12 +510,17 @@ if PAGE == "Overview":
                 "calibrated on real studies, with uncertainty, DGMS checks and real-time alerts.</p>",
                 unsafe_allow_html=True)
     geom = DumpGeometry(3, 30, 32, 30)
-    res = bishop_fos(geom, 44, 30, 18.63)
+    ov_benches = bench_by_bench(geom, 44, 30, 18.63)
+    res = min(ov_benches, key=lambda r_: r_.fos)
     pred = model.predict(row(44, 30, 18.63, 0, geom)).iloc[0]
     left, right = st.columns([3, 2])
     with left:
-        st.plotly_chart(profile_fig(geom, res, "Gevra OCP dump section (SECL): 3 benches x 30 m",
-                                    material=(44, 30, 18.63, 0.0)), **FULL)
+        st.plotly_chart(profile_fig(geom, title="Gevra OCP dump section (SECL): 3 benches x 30 m",
+                                    benches=ov_benches), **FULL)
+        show_bench_check(geom, ov_benches)
+        st.caption("Slip circles found with the Slide2 procedure: Bishop simplified, 50 slices, tolerance 0.005, "
+                   "auto refine search (20 divisions, 10 circles per division, 10 iterations), slope limits moved "
+                   "onto each bench in turn. Slide2 on the same section: 1.883 (bench 2).")
         st.markdown("**Input parameters of this section**")
         st.dataframe(pd.DataFrame([
             ["Unit weight, gamma", "18.63 kN/m3", "NIT Rourkela SECL study (2025)"],
@@ -551,15 +728,16 @@ elif PAGE == "Predict and TARP":
         if not lo <= v <= hi: extrap.append(f"{LABELS[f]} = {v:.1f} (trained {lo:.1f}-{hi:.1f})")
     if extrap:
         st.warning("Outside the training range - verify with the exact solver: " + "; ".join(extrap))
-    if st.button("Verify with exact Bishop solver and draw the slip surface", type="primary"):
-        with st.spinner("Searching slip circles ..."):
-            res = bishop_fos(geom, ce, pe, ge, ru)
-        st.plotly_chart(profile_fig(geom, res, f"Bishop FOS {res.fos:.3f} ({res.n_circles:,} circles searched)",
-                                    material=(ce, pe, ge, ru)),
-                        **FULL)
-        st.session_state.last["bishop"] = res.fos
+    st.subheader("Slip surface (Slide2 procedure)")
+    stg, scope, lim, shown = search_inputs("p", geom)
+    if st.button("Run slip surface search and verify with exact Bishop solver", type="primary"):
+        out = show_search_result(geom, ce, pe, ge, ru, stg, scope, lim, shown)
+        st.caption(f"Material: unit weight {ge:.2f} kN/m3, cohesion {ce:.1f} kPa, friction angle {pe:.1f} deg, "
+                   f"r_u {ru:.2f}.")
+        if out:
+            st.session_state.last["bishop"] = out[0].fos
     else:
-        st.plotly_chart(profile_fig(geom, None, "Dump section", material=(ce, pe, ge, ru)), **FULL)
+        st.plotly_chart(profile_fig(geom, None, "Dump section"), **FULL)
     st.session_state.last.update(dict(time=str(dt.datetime.now())[:16], c=ce, phi=pe, gamma=ge, ru=ru,
                                       H=geom.height, beta=geom.overall_angle, deck=geom.deck_angle,
                                       FOS=pr.FOS, lo=pr.FOS_lo, hi=pr.FOS_hi, level=lvl))

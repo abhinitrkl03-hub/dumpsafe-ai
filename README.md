@@ -217,6 +217,26 @@ the GP predictive standard deviation. Monte Carlo reliability propagates lognorm
 normal friction and unit weight (optionally correlated through a Gaussian copula) through the hybrid
 model, reporting PoF with a binomial confidence interval and the lognormal reliability index.
 
+## Slip circle: Slide2 procedure and bench-by-bench check
+
+The slip circles shown in the app are generated the way Slide2 generates them (`core/slide2.py`):
+
+1. Model - external boundary = dump section from the toe (0, 0), base y = 0, right boundary behind the crest.
+2. Materials - Mohr-Coulomb c, phi, unit weight; water by r_u.
+3. Method - Bishop simplified, 50 slices, tolerance 0.005, maximum 75 iterations (Slide2 defaults).
+4. Surfaces - circular, by auto refine search (default: 20 divisions, 10 circles per division, 10 iterations,
+   best 50 % of divisions kept), grid search (20 x 20 centres, radius increment 10) or slope search (5,000 surfaces).
+5. Slope limits - exit and entry ranges (whole slope, one bench, or custom).
+6. Invalid surfaces rejected - fewer than two slope intersections, below the dump base, outside the limits, not converged.
+7. Result - global minimum with centre, radius lines and FOS; optionally the lowest surfaces colour-coded by FOS.
+
+Bench by bench = the search repeated with the slope limits moved onto each bench (exit on that bench, entry
+anywhere above). SECL section (3 x 30 m, 32 deg, 30 m bench width): 1.885 / 1.880 / 1.880, bench 2 governs,
+Slide2 1.883 (bench 2). 4 x 25 m, 33 deg: 1.970 vs Slide2 1.976. Narrower benches or a wet dump make the lower
+benches critical (6 m bench width: 1.476 / 1.604 / 1.880; r_u 0.25: 1.476 / 1.500 / 1.500).
+The Slide2-procedure FOS agrees with the training labels within 0.27 % SD on 60 random rows (V13), so the
+training data did not need re-solving. Re-run: `python scripts/validate_slide2.py`.
+
 ## Pages
 
 Overview · Data and sources · Methods and equations · Validation · Model lab · Predict and TARP (with a

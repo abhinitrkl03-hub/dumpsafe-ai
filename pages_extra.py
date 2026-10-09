@@ -24,9 +24,23 @@ def methods_page():
                  r"\qquad u_i=r_u\,\gamma\,h_i")
         st.markdown("- Solved by fixed-point iteration (tolerance 1e-4, at most 40 iterations); "
                     "m_alpha is floored at 0.2, the usual numerical guard.\n"
-                    "- 140 slices per circle. Circles are searched (i) on a global grid of centres and exit points, "
-                    "(ii) on a separate grid for every bench, so that small bench-scale circles are not missed, and "
-                    "(iii) in two refinements around the best circle (about 10,000 circles per case).\n"
+                    "- Training labels: 140 slices per circle; circles searched (i) on a global grid of centres "
+                    "and exit points, (ii) on a separate grid for every bench, and (iii) in two refinements around "
+                    "every candidate, keeping the lowest.\n"
+                    "- Slip circles drawn in the app follow the Slide2 procedure step by step (core/slide2.py): "
+                    "1 model (external boundary from the toe, base y = 0); 2 materials; 3 Bishop simplified with "
+                    "50 slices, tolerance 0.005, 75 iterations; 4 circular surfaces by auto refine search (20 "
+                    "divisions along the slope, 10 circles per division, 10 iterations, best 50 % of divisions kept), "
+                    "grid search (20 x 20 centre grid, radius increment 10) or slope search (5,000 random surfaces); "
+                    "5 slope limits for exit and entry; 6 invalid surfaces rejected (fewer than two slope "
+                    "intersections, below the base, outside the limits, not converged); 7 the global minimum drawn "
+                    "with its centre, radius lines and FOS, optionally with the lowest surfaces colour-coded by FOS. "
+                    "Agreement with the author's Slide2 runs: V12; with the training labels: V13.\n"
+                    "- Bench-by-bench check (Overview and Predict pages): the Slide2 search is repeated with the slope "
+                    "limits moved onto each bench in turn (exit on that bench face or the half bench width in front "
+                    "of its toe, entry anywhere above). The most critical bench is the one to prioritise for strengthening, drainage and "
+                    "monitoring. Which bench governs depends on bench width and water: wide benches make all benches "
+                    "similar, narrow benches or a wet dump make the lower benches critical.\n"
                     "- The foundation is treated as competent: circles may not pass below the dump base "
                     "(composite surfaces off, the Slide2 default). This setting was chosen after comparison "
                     "with Slide2 (V12).\n"
@@ -224,6 +238,17 @@ def validation_page(model, physics, real_train, DATA, PLOT, FULL, badge):
         rows.append(("V12", "Bishop solver vs author's Slide2 runs (Bishop, circular)",
                      "; ".join(f"{r.FOS_bishop:.3f} vs {r.FOS_slide2:.3f} ({r.diff_pct:+.1f} %)" for r in v12.itertuples()),
                      bool((v12.diff_pct.abs() < 2).all())))
+        if "FOS_slide2_procedure_bench" in v12:
+            rows.append(("V12b", "Slide2-procedure search (auto refine, 50 slices, bench by bench) vs Slide2",
+                         "; ".join(f"{r.FOS_slide2_procedure_bench:.3f} vs {r.FOS_slide2:.3f} "
+                                   f"({r.diff_pct_procedure:+.2f} %)" for r in v12.itertuples()),
+                         bool((v12.diff_pct_procedure.abs() < 1).all())))
+    p13 = os.path.join(V, "v13_slide2_procedure_vs_labels.csv")
+    if os.path.exists(p13):
+        v13 = pd.read_csv(p13)
+        rows.append(("V13", "Slide2-procedure search vs training labels (60 random rows)",
+                     f"mean {v13.diff_pct.mean():+.2f} %, SD {v13.diff_pct.std():.2f} %, "
+                     f"max {v13.diff_pct.abs().max():.2f} %", bool(v13.diff_pct.abs().max() < 2)))
     # V11 DGMS
     ok_secl = dgms_check(3, 30, 32, 30)[0]
     ok_wcl = dgms_check(1, 75, 43, 0)[0]
@@ -253,6 +278,14 @@ def validation_page(model, physics, real_train, DATA, PLOT, FULL, badge):
     with c2:
         st.markdown("**V9 - moisture path** (c 44 kPa, phi 30 deg, dry unit weight 17 kN/m3, 3 x 30 m)")
         st.dataframe(v7.assign(FOS_model=p7, diff_pct=e7).round(3), hide_index=True, **FULL)
+    if os.path.exists(p12):
+        st.markdown("**V12 - author's Slide2 runs vs this app** (old two-stage search and the Slide2-procedure search)")
+        st.dataframe(pd.read_csv(p12).round(3), hide_index=True, **FULL)
+    if os.path.exists(p13):
+        st.markdown("**V13 - Slide2-procedure search vs the training labels.** The slip circles drawn in the app "
+                    "(Slide2 procedure) and the FOS values the model was trained on (two-stage search) agree, so "
+                    "the training data did not need to be re-solved.")
+        st.dataframe(v13.round(3), hide_index=True, **FULL)
     st.markdown("**V10 - WCL failure.** With peak strength Bishop gives 1.07 (stable), with residual strength "
                 "0.72; the dump actually failed and the source's FEM analysis gave 0.80. Field strength at failure "
                 "lies between peak and residual, the expected behaviour of a strain-softening spoil.")
