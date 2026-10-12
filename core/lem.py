@@ -29,6 +29,14 @@ class DumpGeometry:
     deck_angle: float = 32.0       # deg, face angle of one deck
     berm_width: float = 30.0       # m, width of berm between decks
     top_deck_height: float | None = None   # m, height of the top deck if lower (e.g. 30+30+20)
+    crest_length: float | None = None      # m, flat ground behind the top crest in the drawn model
+                                           # (Slide2 right boundary); None = bench width, or 30 m
+
+    @property
+    def crest_extension(self) -> float:
+        if self.crest_length is not None and self.crest_length > 0:
+            return float(self.crest_length)
+        return float(self.berm_width) if (self.n_decks > 1 and self.berm_width > 0) else 30.0
 
     def deck_heights(self) -> list:
         hs = [self.deck_height] * self.n_decks

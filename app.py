@@ -216,8 +216,11 @@ def _arc_xy(xc, yc, R, geom, x0=None, x1=None, n=160):
     return X, yc - np.sqrt(np.clip(R ** 2 - (X - xc) ** 2, 0, None))
 
 
+TIE_TOL = 0.001   # benches within 0.1 % of the minimum FOS are equally critical
+
+
 def profile_fig(geom: DumpGeometry, res=None, title="", fos=None, material=None, benches=None,
-                surfaces=0, limits=None):
+                surfaces=0, limits=None, show_ties=False):
     """Section drawn like a Slide2 model: external boundary from the toe (0, 0), base y = 0, 1:1 scale.
     Nothing is written on the dump. As in Slide2: the global minimum surface is bold, with its centre,
     the two radius lines and the FOS label above the slope; optionally the lowest `surfaces` valid
@@ -233,8 +236,12 @@ def profile_fig(geom: DumpGeometry, res=None, title="", fos=None, material=None,
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=px, y=py, fill="toself", fillcolor=OB, line=dict(color=OB_LINE, width=2),
                              name="Dump", hoverinfo="skip"))
+    tied = []
     if benches:
         res = min(benches, key=lambda r_: r_.fos)
+        tied = [r_ for r_ in benches if np.isfinite(r_.fos) and r_.fos <= res.fos * (1 + TIE_TOL)]
+        if not show_ties:          # Slide2 style: one global minimum, other benches dotted
+            tied = [res]
     if surfaces and res is not None and hasattr(res, "lowest") and res.all_fos.size:
         XC, YC, RR, FF = res.lowest(int(surfaces))
         lo_f, hi_f = float(FF.min()), float(max(FF.max(), FF.min() + 1e-6))
@@ -249,11 +256,24 @@ def profile_fig(geom: DumpGeometry, res=None, title="", fos=None, material=None,
                                  marker=dict(color=FF, colorscale="Turbo", cmin=lo_f, cmax=hi_f, size=6)))
     if benches:
         for k, r_ in enumerate(benches):
-            if r_ is res or not np.isfinite(r_.fos):
+            if r_ in tied or not np.isfinite(r_.fos):
                 continue
             ax, ay = slip_arc(r_, geom)
             fig.add_trace(go.Scatter(x=ax, y=ay, mode="lines", line=dict(color="#3d3426", width=1.5, dash="dot"),
                                      name=f"Bench {k + 1} circle (FOS {r_.fos:.3f})", hoverinfo="name"))
+        # benches equally critical with the global minimum: all drawn like the global minimum
+        for r_ in tied:
+            if r_ is res:
+                continue
+            ax, ay = slip_arc(r_, geom)
+            fig.add_trace(go.Scatter(x=ax, y=ay, mode="lines", line=dict(color=SLIP, width=3.5), showlegend=False,
+                                     hovertemplate=f"Bench {benches.index(r_) + 1}: FOS {r_.fos:.3f}<extra></extra>"))
+            if len(ax):
+                fig.add_trace(go.Scatter(x=[ax[0], r_.xc, ax[-1]], y=[ay[0], r_.yc, ay[-1]], mode="lines",
+                                         line=dict(color=SLIP, width=1), showlegend=False, hoverinfo="skip"))
+            fig.add_trace(go.Scatter(x=[r_.xc], y=[r_.yc], mode="markers+text", text=[f"{r_.fos:.3f}"],
+                                     textposition="top center", marker=dict(color=SLIP, size=7, symbol="x"),
+                                     showlegend=False, textfont=dict(color=SLIP, size=13), hoverinfo="skip"))
     for lim in ([limits] if limits else []):
         pts = sorted(set([lim[0][0], lim[0][1], lim[1][0], lim[1][1]]))
         fig.add_trace(go.Scatter(x=pts, y=mdl.yg(np.array(pts)), mode="markers", name="Slope limits",
@@ -263,7 +283,9 @@ def profile_fig(geom: DumpGeometry, res=None, title="", fos=None, material=None,
     if res is not None and np.isfinite(res.fos):
         ax, ay = slip_arc(res, geom)
         lab = "Global minimum slip circle"
-        if benches:
+        if benches and len(tied) > 1:
+            lab = "Equally critical benches " + ", ".join(str(benches.index(r_) + 1) for r_ in tied)
+        elif benches:
             lab += f" - bench {benches.index(res) + 1}"
         fig.add_trace(go.Scatter(x=ax, y=ay, mode="lines", line=dict(color=SLIP, width=3.5),
                                  name=f"{lab} (FOS {res.fos:.3f})"))
@@ -293,6 +315,7 @@ def bench_table(geom: DumpGeometry, benches):
                      "Elevation (m)": f"{yt:.0f} - {ycr:.0f}",
                      "Critical FOS": round(r_.fos, 3),
                      "Status": ("most critical" if abs(r_.fos - worst) < 1e-9 else
+                                "equally critical (within 0.1 %)" if r_.fos <= worst * (1 + TIE_TOL) else
                                 f"+{(r_.fos - worst) / worst * 100:.1f} % above most critical"),
                      "Meets minimum": "yes" if r_.fos >= FOS_MIN else "NO",
                      "Centre x, y (m)": f"{r_.xc:.1f}, {r_.yc:.1f}",
@@ -329,12 +352,20 @@ def show_bench_check(geom, benches):
     st.markdown("**Bench-by-bench check** (lowest-FOS circle exiting on each bench; circles may run back "
                 "through the benches above)")
     st.dataframe(bench_table(geom, benches), hide_index=True, **FULL)
-    fs = sorted((r_.fos, k + 1) for k, r_ in enumerate(benches))
-    if len(fs) > 1 and (fs[1][0] - fs[0][0]) / fs[0][0] < 0.005:
-        st.caption(f"Bench {fs[0][1]} is the most critical, but bench {fs[1][1]} is within 0.5 %: treat both as "
-                   "equally critical when planning strengthening or monitoring.")
+    worst = min(r_.fos for r_ in benches)
+    tied = [k + 1 for k, r_ in enumerate(benches) if r_.fos <= worst * (1 + TIE_TOL)]
+    if len(tied) == len(benches) and len(tied) > 1:
+        st.caption(f"The red circle is the global minimum (bench {benches.index(min(benches, key=lambda r_: r_.fos)) + 1}), "
+                   f"as Slide2 shows it. Note that all {len(tied)} benches have the same critical FOS ({worst:.3f}, "
+                   "within 0.1 %): the benches are identical and wide enough to act as separate slopes, so which one "
+                   "is the 'minimum' is decided by the third or fourth decimal place. Apply the same precautions to "
+                   "every bench.")
+    elif len(tied) > 1:
+        st.caption(f"The red circle is the global minimum, as in Slide2. Benches {', '.join(map(str, tied))} are "
+                   f"equally critical (FOS {worst:.3f}, within 0.1 %): treat them alike when planning strengthening "
+                   "or monitoring.")
     else:
-        st.caption(f"Bench {fs[0][1]} is the most critical: prioritise it for strengthening, drainage and "
+        st.caption(f"Bench {tied[0]} is the most critical: prioritise it for strengthening, drainage and "
                    "monitoring prisms.")
 
 
@@ -352,6 +383,9 @@ def search_inputs(key, geom):
                             help="0 = global minimum only. Otherwise the lowest surfaces are drawn colour-coded "
                                  "by FOS, like 'display all surfaces' in Slide2.")
     stg = Slide2Settings(method=meth)
+    st.session_state.show_ties = st.toggle("Also highlight benches that are equally critical (within 0.1 %)",
+                                           value=False, key=f"{key}tie",
+                                           help="Off = one global minimum circle, as Slide2 displays it.")
     lim = None
     if scope == "Custom limits":
         a1, a2, a3, a4 = st.columns(4)
@@ -405,9 +439,10 @@ def show_search_result(geom, c, phi, gamma, ru, stg, scope, lim, shown, title_pr
         return None
     allr = benches or [res]
     n_gen = sum(r_.n_circles for r_ in allr); n_val = sum(r_.n_valid for r_ in allr)
+    ties = st.session_state.get("show_ties", False)
     st.plotly_chart(profile_fig(geom, res, title=f"{title_prefix}Bishop simplified, {METHOD_NAMES[stg.method]}: "
                                 f"global minimum FOS {res.fos:.3f}", benches=benches, surfaces=shown,
-                                limits=None if benches else lim_d), **FULL)
+                                limits=None if benches else lim_d, show_ties=ties), **FULL)
     if getattr(res, "edge_warning", False):
         st.warning("The minimum lies on the edge of the search grid (Slide2 gives the same warning). The grid was "
                    "extended once; try Auto refine search to confirm.")
@@ -418,7 +453,7 @@ def show_search_result(geom, c, phi, gamma, ru, stg, scope, lim, shown, title_pr
 
 
 def geometry_inputs(key, default=(3, 30.0, 32.0, 30.0)):
-    c1, c2, c3, c4, c5 = st.columns(5)
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
     nd = c1.number_input("Number of decks", 1, 8, default[0], key=f"{key}nd")
     dh = c2.number_input("Deck height (m)", 5.0, 150.0, default[1], key=f"{key}dh",
                          help="Reg. 106: at most 30 m when the dump is higher than 30 m. Larger values are "
@@ -429,8 +464,11 @@ def geometry_inputs(key, default=(3, 30.0, 32.0, 30.0)):
     da = c4.number_input("Deck angle (deg)", 10.0, 60.0, default[2], key=f"{key}da")
     bw = c5.number_input("Bench width (m)", 0.0, 150.0, default[3], key=f"{key}bw",
                          disabled=nd == 1)
+    cl = c6.number_input("Crest length behind top (m)", 0.0, 300.0, 0.0, key=f"{key}cl",
+                         help="Flat ground drawn behind the top crest, up to the model's right boundary (as in "
+                              "the Slide2 model). 0 = same as the bench width (30 m for a single bench).")
     g = DumpGeometry(int(nd), dh, da, bw if nd > 1 else 0.0,
-                     top if (nd > 1 and top > 0) else None)
+                     top if (nd > 1 and top > 0) else None, cl if cl > 0 else None)
     ok, viol = dgms_check(g.n_decks, g.deck_height, g.deck_angle, g.berm_width, g.overall_angle,
                           H=g.height)
     if ok:

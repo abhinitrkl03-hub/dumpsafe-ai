@@ -85,7 +85,7 @@ class Slide2Model:
         self.geom = geom
         L, H = geom.horizontal_extent, geom.height
         self.L, self.H = L, H
-        self.x_right = L + max(0.25 * L, 30.0)
+        self.x_right = L + geom.crest_extension
         xs, ys = geom.surface()
         m = (xs >= 0) & (xs <= L)
         self.sx = np.r_[0.0, xs[m], L, self.x_right]
