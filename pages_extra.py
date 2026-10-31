@@ -111,12 +111,23 @@ def methods_page():
         st.markdown("The first three relations are standard phase relations. S_c (default 0.8), k_c and k_phi are "
                     "assumptions to be calibrated with site data; softening is off by default.")
 
-    with st.expander("8. Monitoring"):
-        st.latex(r"v(t)=\text{slope of the least-squares line through }\{(t_j,x_j):t-\Delta\le t_j\le t\},\qquad "
-                 r"\frac1v=a+bt,\quad t_f=-\frac ab\quad(\text{Fukuzono 1985})")
-        st.latex(r"ARI_i=ARI_{i-1}\,k^{\Delta t}+R_i,\qquad r_u=\min(r_{u,max},\ \kappa\,ARI)")
-        st.markdown("Velocity bands and monitoring frequencies come from the slope-movement table of the NIT Rourkela "
-                    "scientific study notes. kappa and k are site-calibration assumptions.")
+    with st.expander("8. Monitoring and the multi-parameter TARP"):
+        st.latex(r"v(t)=\text{slope of the least-squares line through }\{(t_j,x_j):t-\Delta\le t_j\le t\}")
+        st.markdown("**Acceleration (T5).** Short and long trailing averages of velocity (default 1 and 5 days). "
+                    "When the short average rises above the long one and stays at least 1.3 times higher for 2 days, "
+                    "the onset of acceleration (OOA) is declared (Carla et al. 2017). The inverse velocity is then "
+                    "fitted only on data after the OOA, over the latest 5 days, separately for the raw, short and "
+                    "long series; the three failure times give a forecast window (Fukuzono 1985).")
+        st.latex(r"\frac1v=a+bt,\quad t_f=-\frac ab")
+        st.markdown("**Water (T2).** Measured r_u from a piezometer, or estimated from the antecedent rainfall "
+                    "index; with both, the rain-to-r_u coefficient is fitted by least squares.")
+        st.latex(r"r_u=\frac{\gamma_w h_p}{\gamma z},\qquad ARI_i=ARI_{i-1}\,k^{\Delta t}+R_i,\qquad "
+                 r"r_u\approx\min(r_{u,max},\ \kappa\,ARI)")
+        st.markdown("**Rule.** T1 design FOS, T2 live FOS, T3 24-h rainfall (IMD heavy / very heavy / extremely "
+                    "heavy), T4 velocity bands (NIT Rourkela scientific-study notes), T5 acceleration and T6 shift "
+                    "inspection each give a level; the worst governs, raised one step when people or haul roads "
+                    "are in the run-out zone. Defaults for T5 were chosen on 40 synthetic records (no false onset, "
+                    "detection about 4 days after the true onset) and must be calibrated on the mine's own data.")
 
     with st.expander("9. Rules and acceptance criteria"):
         st.markdown("**CMR 2017, Regulation 106 (spoil banks):** slope not steeper than the angle of repose and "
@@ -124,13 +135,16 @@ def methods_page():
                     "slope not steeper than 1V:1.5H (33.7 deg); toe at least 100 m from mine openings, railways, "
                     "public roads and buildings. Steeper or higher only when a scientific study recommends it and the "
                     "Regional Inspector permits it by order.")
-        st.markdown("**Acceptance criteria (overall slope, Read & Stacey 2009, Table 9.9):**")
-        st.dataframe(pd.DataFrame({"Consequence": ["Low", "Medium", "High"],
-                                   "Minimum static FoS": ["1.2-1.3", "1.3", "1.3-1.5"],
-                                   "Maximum PoF": ["15-20 %", "5-10 %", "5 %"]}), hide_index=True)
+        st.markdown("**Minimum factor of safety (DGMS circular for the scientific study under Reg. 106(2) of "
+                    "CMR 2017, para 3.2):** not less than 1.50 for permanent or long-standing slopes and 1.30 "
+                    "for all other cases. Para 4.1(iii) asks the study to give trigger points for the TARP.")
+        st.dataframe(pd.DataFrame({"Type of dump slope": ["Permanent / long-standing", "Other (working / temporary)"],
+                                   "Minimum static FoS (DGMS)": ["1.50", "1.30"],
+                                   "Maximum PoF (Read & Stacey 2009)": ["5 %", "10 %"]}), hide_index=True)
         st.markdown("**TARP classes:** Green = meets the criteria; Yellow = marginal (one criterion missed, or the "
                     "prediction interval crosses the minimum FoS); Orange = unstable design (criteria missed); "
-                    "Red = FOS below 1. The monitoring TARP takes the worse of this class and the movement class.")
+                    "Red = FOS below 1. The multi-parameter TARP page combines this class with rainfall, movement, "
+                    "acceleration and visual triggers.")
 
     with st.expander("10. Evaluation metrics"):
         st.latex(r"R^2=1-\frac{\sum(y_i-\hat y_i)^2}{\sum(y_i-\bar y)^2},\ \ RMSE=\sqrt{\tfrac1n\sum(y_i-\hat y_i)^2},"
@@ -143,8 +157,11 @@ def methods_page():
 - Bishop A.W. (1955) The use of the slip circle in the stability analysis of slopes. Géotechnique 5(1):7-17.
 - Bishop A.W., Morgenstern N. (1960) Stability coefficients for earth slopes. Géotechnique 10(4):129-150.
 - Janbu N. (1954) Stability analysis of slopes with dimensionless parameters. Harvard Soil Mech. Series 46.
+- Carla T., Intrieri E., Di Traglia F., Nolesini T., Gigli G., Casagli N. (2017) Guidelines on the use of inverse velocity method as a tool for setting alarm thresholds and forecasting landslides and structure collapses. Landslides 14(2):517-534.
+- India Meteorological Department. Rainfall intensity classes (heavy 64.5-115.5, very heavy 115.6-204.4, extremely heavy >= 204.5 mm in 24 h).
 - Fukuzono T. (1985) A new method for predicting the failure time of a slope. 4th Int. Conf. Field Workshop on Landslides, Tokyo, 145-150.
 - Kulhawy F.H. (1992) On the evaluation of static soil properties. ASCE GSP 31:95-115.
+- DGMS. Guidelines for the scientific study under Regulation 106(2) of CMR 2017 (technical circular), para 3.2 (minimum factor of safety) and para 4.1 (monitoring and TARP).
 - Read J., Stacey P. (eds) (2009) Guidelines for Open Pit Slope Design, CSIRO/CRC Press; ch. 9 Wesseloo J., Read J., Acceptance criteria.
 - Vovk V., Gammerman A., Shafer G. (2005) Algorithmic Learning in a Random World. Springer.
 - Coal Mines Regulations 2017, Regulation 106 (spoil banks), Govt. of India.
@@ -293,11 +310,14 @@ def validation_page(model, physics, real_train, DATA, PLOT, FULL, badge):
     st.markdown(
         badge("assumption", "warn") + "Moisture softening coefficients k_c, k_phi (off by default) and the saturation "
         "threshold S_c = 0.8 - need direct-shear tests at several moisture contents and piezometer data.<br>" +
-        badge("assumption", "warn") + "Rain-to-r_u coefficient on the monitoring page - needs piezometer readings after storms.<br>" +
+        badge("assumption", "warn") + "Rain-to-r_u coefficient on the TARP page - fitted automatically when piezometer and rain data are both "
+        "uploaded; otherwise an assumed value.<br>" +
+        badge("assumption", "warn") + "T5 acceleration settings and the rainfall thresholds - defaults from synthetic "
+        "records and IMD classes; calibrate on the mine's own prism / radar and rain records.<br>" +
         badge("assumption", "warn") + "Jagannathpur and WCL corrections - each study is a single site, so its offset "
         "cannot be checked on another site (V7 shows physics-only error for these).<br>" +
         badge("source", "info") + "Velocity TARP bands - from the scientific-study table, not derived here.<br>" +
-        badge("source", "info") + "Acceptance criteria - Read & Stacey (2009) Table 9.9; replace with the values in the "
-        "mine's approved study if different.<br>" +
+        badge("source", "info") + "Minimum FoS - DGMS circular (Reg. 106(2) of CMR 2017), para 3.2: 1.50 permanent / "
+        "long-standing, 1.30 other cases. Maximum PoF - Read & Stacey (2009) Table 9.9.<br>" +
         badge("source", "info") + "CMR 2017 Reg. 106 limits - taken from published summaries; confirm against the "
         "gazette text.", unsafe_allow_html=True)

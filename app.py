@@ -18,7 +18,12 @@ from core.models import FOSModel, FEATURES, LABELS, METHOD_LABELS, method_class,
 from core.moisture import moisture_state, saturation_moisture
 from core.montecarlo import sample_inputs, run_mc, reliability, exact_check, rank_sensitivity
 from core.monitoring import (process_series, inverse_velocity_forecast, classify_velocity,
-                             demo_series, VELOCITY_TARP, LEVEL_ORDER)
+                             demo_series, demo_storm, VELOCITY_TARP, LEVEL_ORDER, add_moving_averages,
+                             onset_of_acceleration, iv_window, calibrate_ru)
+from core.tarp import (fos_trigger, rain_trigger, accel_trigger, visual_trigger, VISUAL_SIGNS, VEL_MAP,
+                       ACTION_TABLE, rolling_sum, antecedent_index, ru_from_piezometer, level_history,
+                       first_time, evaluate as tarp_evaluate, COL as TCOL)
+TRIG_AUTO = ["T2 Live FOS", "T3 Rainfall", "T4 Velocity", "T5 Acceleration"]
 from core.design import design_envelope, back_analyse
 from core.dgms import check as dgms_check, min_berm, MAX_DECK_ANGLE, MAX_OVERALL
 
@@ -131,17 +136,18 @@ st.sidebar.title("DumpSafe AI")
 st.sidebar.caption("Sim-to-real FOS prediction for overburden dumps")
 PAGE = st.sidebar.radio("Go to", [
     "Overview", "Data and sources", "Methods and equations", "Validation", "Model lab",
-    "Predict and TARP", "Monte Carlo reliability", "Design envelope", "Real-time monitoring"])
+    "Predict and TARP", "Monte Carlo reliability", "Design envelope", "Multi-parameter TARP"])
 
-# Acceptance criteria: Read & Stacey (2009) Guidelines for Open Pit Slope Design, Table 9.9
-# (Wesseloo & Read), overall slope scale. Minimum static FoS / maximum PoF.
-RS_TABLE = {"Low": (1.2, 0.20), "Medium": (1.3, 0.10), "High": (1.3, 0.05)}
+# Minimum FoS: DGMS circular on the scientific study under Reg. 106(2) of CMR 2017, para 3.2:
+# not less than 1.50 for permanent or long-standing slopes and 1.30 for all other cases.
+# DGMS gives no PoF limit; the PoF values are those of Read & Stacey (2009), Table 9.9.
+DGMS_TABLE = {"Permanent / long-standing dump": (1.50, 0.05), "Other (working / temporary) dump": (1.30, 0.10)}
 with st.sidebar.expander("Acceptance criteria (TARP)", expanded=False):
-    cons = st.selectbox("Consequence of failure", ["Medium", "Low", "High"],
-                        help="Overall-slope criteria of Read & Stacey (2009), Table 9.9: Low FoS 1.2-1.3 / "
-                             "PoF 15-20 %; Medium FoS 1.3 / PoF 5-10 %; High FoS 1.3-1.5 / PoF 5 %. A dump "
-                             "next to haul roads, workings or villages is at least Medium.")
-    fs_def, pf_def = RS_TABLE[cons]
+    cons = st.selectbox("Type of dump slope", list(DGMS_TABLE),
+                        help="DGMS circular for the scientific study under Reg. 106(2) of CMR 2017, para 3.2: "
+                             "minimum FoS 1.50 for permanent or long-standing slopes and 1.30 for all other "
+                             "cases. Maximum PoF (not set by DGMS) from Read & Stacey (2009), Table 9.9.")
+    fs_def, pf_def = DGMS_TABLE[cons]
     FOS_MIN = st.number_input("Minimum acceptable FOS", 1.0, 2.0, fs_def, 0.05)
     POF_MAX = st.number_input("Maximum acceptable PoF (%)", 0.5, 50.0, pf_def * 100, 0.5) / 100
     st.caption("Use the values in your mine's approved scientific study / DGMS permission if they differ.")
@@ -159,8 +165,8 @@ st.sidebar.caption(f"Model trained on {len(load_physics()):,} physics rows + "
                    f"{model.n_real} real rows" + ("" if st.session_state.use_noncompliant
                                                   else " (DGMS Reg. 106 designs only)"))
 
-# Actions follow the stability classes of Read & Stacey (2009) ch. 9 (stable / marginal /
-# unstable) plus a failure class (FOS < 1).
+# Minimum FoS from DGMS (para 3.2); stable / marginal / unstable classes as in Read & Stacey (2009)
+# ch. 9, plus a failure class (FOS < 1).
 ACTIONS = {
     "Green": "Stable: meets the acceptance criteria. Normal operations and routine monitoring.",
     "Yellow": "Marginal: fails one criterion (or the uncertainty band crosses it). Minor geometry changes, "
@@ -587,8 +593,8 @@ if PAGE == "Overview":
 - **Every result is checked.** The Validation page compares each part of the model with an independent
   reference (published results, closed-form solutions, the exact solver, a real failure); the Methods page
   gives every equation and source.
-- **Acceptance criteria from practice.** TARP classes follow the overall-slope FoS / PoF criteria of Read &
-  Stacey (2009) for the chosen consequence of failure.
+- **Acceptance criteria from DGMS.** The TARP minimum FOS follows para 3.2 of the DGMS circular for the
+  scientific study under Reg. 106(2) of CMR 2017: 1.50 for permanent or long-standing dumps, 1.30 for all others.
 - **Own physics engine, matched to Slide2.** Every synthetic label comes from a Bishop simplified solver
   written for this project, checked against the 8 SECL study values, 2,250 published Slide cases and the
   author's own Slide2 runs, not from FOS-scaling formulas.
@@ -757,7 +763,7 @@ elif PAGE == "Predict and TARP":
                   f"{(pr.FOS - dry.FOS) / dry.FOS * 100:+.1f} %", delta_color="off")
         if cfg["kc"] > 0 or cfg["kphi"] > 0:
             st.caption(f"Strength after softening: c = {ce:.1f} kPa, phi = {pe:.1f} deg (assumed coefficients).")
-    tarp_box(lvl, f"FOS {pr.FOS:.2f} against minimum {FOS_MIN:.2f} ({cons} consequence, Read & Stacey 2009)",
+    tarp_box(lvl, f"FOS {pr.FOS:.2f} against minimum {FOS_MIN:.2f} ({cons.lower()}, DGMS para 3.2)",
              "The lower end of the prediction interval falls below the minimum." if lvl == "Yellow" else "")
     extrap = []
     ph = load_physics()
@@ -853,7 +859,7 @@ elif PAGE == "Design envelope":
     bw = c2.number_input("Preferred bench width (m)", 10.0, 60.0, 30.0)
     ru = c3.slider("Design r_u", 0.0, 0.5, 0.0, 0.01)
     target = c4.number_input("Target FOS", 1.0, 2.0, float(FOS_MIN), 0.05,
-                             help="Defaults to the sidebar acceptance criterion (Read & Stacey 2009).")
+                             help="Defaults to the sidebar acceptance criterion (DGMS circular, para 3.2).")
     pof_t = st.slider("Maximum acceptable PoF (%)", 0.5, 50.0, float(POF_MAX * 100), 0.5) / 100
     heights = np.arange(30, 121, 10); angles = np.arange(24, 41, 1)
     with st.spinner("Evaluating designs ..."):
@@ -877,13 +883,16 @@ elif PAGE == "Design envelope":
     fig.update_xaxes(title="Deck angle (deg)"); fig.update_yaxes(title="Total dump height (m)")
     st.plotly_chart(fig, **FULL)
 # ------------------------------------------------------------------
-elif PAGE == "Real-time monitoring":
-    st.title("Real-time monitoring and unified TARP")
-    st.markdown("<p class='lede'>Slope movement from prisms / radar, the rainfall-updated FOS and an "
-                "inverse-velocity failure forecast, combined into one alert level.</p>", unsafe_allow_html=True)
-    src = st.radio("Data source", ["Demo feed (synthetic)", "Upload CSV", "Live CSV URL"], horizontal=True)
-    st.caption("Required columns: timestamp, displacement_mm. Optional: rainfall_mm, r_u (piezometer). "
-               "Total-station, prism or radar exports work once renamed.")
+elif PAGE == "Multi-parameter TARP":
+    st.title("Multi-parameter TARP for the dump")
+    st.markdown("<p class='lede'>Six triggers, each with its own Green / Yellow / Orange / Red level: the design "
+                "FOS, the live FOS with today's water, rainfall, slope velocity, acceleration (inverse velocity) "
+                "and shift-inspection signs. The worst trigger sets the TARP level, and the level is raised one "
+                "step when people or haul roads are in the run-out zone.</p>", unsafe_allow_html=True)
+    src = st.radio("Data source", ["Demo A: creep to failure (synthetic)", "Demo B: monsoon storm (synthetic)",
+                                   "Upload CSV", "Live CSV URL"], horizontal=True)
+    st.caption("Required columns: timestamp, displacement_mm (prism, total station or radar). Optional: "
+               "rainfall_mm (rain gauge, IMD or GPM), piezo_head_m (piezometer head above the tip) or r_u.")
     url, t_true = None, None
     if src == "Upload CSV":
         up = st.file_uploader("Monitoring CSV", type="csv")
@@ -891,113 +900,282 @@ elif PAGE == "Real-time monitoring":
     elif src == "Live CSV URL":
         url = st.text_input("Published CSV link (e.g. Google Sheets > Publish to web > CSV)")
         raw = None
-    else:
+    elif src.startswith("Demo A"):
         raw, t_true = demo_series()
-        st.info("Synthetic demonstration data: steady creep, then accelerating (tertiary) creep that ends in "
-                f"failure on day {t_true:.0f}. Replace with real prism or radar readings.")
-    with st.expander("Processing settings", expanded=False):
-        c1, c2, c3 = st.columns(3)
-        window = c1.number_input("Velocity window (days)", 0.25, 5.0, 1.0, 0.25,
-                                 help="Velocity = slope of a straight line fitted to the displacements in this "
-                                      "trailing window. Longer windows suppress survey noise.")
-        floor = c2.number_input("Noise floor (mm/day)", 0.0, 2.0, 0.2, 0.05,
-                                help="Velocities below this are treated as no measurable movement and left "
-                                     "out of the 1/v plot (a daily total-station survey resolves roughly "
-                                     "0.1-0.5 mm/day).")
-        last_n = c3.number_input("Points for inverse-velocity fit", 5, 100, 20)
-        c4, c5, c6 = st.columns(3)
-        decay = c4.slider("Antecedent-rain decay per day", 0.5, 0.99, 0.90, 0.01)
-        ru_per_mm = c5.number_input("r_u per mm of antecedent rain", 0.0, 0.01, 0.002, 0.0005, format="%.4f")
-        ru_max = c6.slider("Maximum r_u", 0.0, 0.6, 0.35, 0.01)
-    with st.expander("Material and geometry of the monitored dump"):
+        st.info("Synthetic data: steady creep, then accelerating (tertiary) creep that ends in failure on day "
+                f"{t_true:.0f}. Used only to show how the triggers behave; replace with real readings.")
+    else:
+        raw, t_true = demo_storm()
+        st.info("Synthetic data: steady slow creep and a two-day storm of about 150 mm/day from day 20, with a "
+                "piezometer that rises and drains. Movement stays Normal; watch the rainfall and live-FOS "
+                "triggers.")
+
+    with st.expander("Site: material, geometry and what lies below the dump", expanded=False):
         c, phi, g = material_inputs("rt")
         geom = geometry_inputs("rt")
+        k1, k2 = st.columns(2)
+        ru_design = k1.number_input("Design r_u (used for T1)", 0.0, 0.6, 0.0, 0.01,
+                                    help="Pore-pressure ratio assumed in the design. 0 = drained (dry) design.")
+        people = k2.toggle("People, haul road or structures in the run-out zone", value=False,
+                           help="Raises Yellow to Orange and Orange to Red (consequence of failure). Design FOS and "
+                                "rainfall alone are raised to Orange at most; Red needs a movement, live-FOS or "
+                                "visual trigger.")
+    with st.expander("Trigger thresholds and processing (calibrate for your mine)", expanded=False):
+        st.markdown("**T3 Rainfall in 24 h (mm).** Default: IMD classes heavy / very heavy / extremely heavy.")
+        r1, r2, r3 = st.columns(3)
+        rain_thr = (r1.number_input("Yellow from", 0.0, 500.0, 64.5, 0.5),
+                    r2.number_input("Orange from", 0.0, 500.0, 115.6, 0.5),
+                    r3.number_input("Red from", 0.0, 800.0, 204.5, 0.5))
+        st.markdown("**T4 Velocity.** Bands of the NIT Rourkela scientific-study notes (table on the right "
+                    "tab). Velocity = slope of a line through the readings in a trailing window.")
+        p1, p2 = st.columns(2)
+        window = p1.number_input("Velocity window (days)", 0.25, 5.0, 1.0, 0.25)
+        floor = p2.number_input("Noise floor (mm/day)", 0.0, 2.0, 0.2, 0.05,
+                                help="Velocities below this are treated as no measurable movement.")
+        st.markdown("**T5 Acceleration** (Carla et al. 2017): onset when the short moving average of velocity "
+                    "rises above the long one and stays there; inverse-velocity window from the raw, short and "
+                    "long series.")
+        a1, a2, a3, a4 = st.columns(4)
+        sma_d = a1.number_input("Short average (days)", 0.25, 5.0, 1.0, 0.25)
+        lma_d = a2.number_input("Long average (days)", 1.0, 30.0, 5.0, 0.5)
+        ratio = a3.number_input("Short / long ratio", 1.0, 3.0, 1.3, 0.05)
+        persist = a4.number_input("Held for (days)", 0.0, 10.0, 2.0, 0.25)
+        a5, a6, a7, a8 = st.columns(4)
+        fit_d = a5.number_input("1/v fit length (days)", 2.0, 30.0, 5.0, 0.5)
+        orange_d = a6.number_input("Orange if failure within (days)", 1.0, 60.0, 7.0, 0.5,
+                                   help="Also needs the velocity above the Normal band (2 mm/day).")
+        red_d = a7.number_input("Red if failure within (days)", 0.5, 30.0, 3.0, 0.5)
+        red_v = a8.number_input("and velocity at least (mm/day)", 0.0, 200.0, 10.0, 1.0,
+                                help="Red from inverse velocity also needs the slope to be in the Alert band, "
+                                     "so a noisy early fit cannot evacuate the pit on its own.")
+        st.markdown("**T2 Water link.** Measured r_u from a piezometer is used when available; otherwise r_u is "
+                    "estimated from the antecedent rainfall index (ARI).")
+        w1, w2, w3, w4 = st.columns(4)
+        decay = w1.slider("ARI decay per day", 0.5, 0.99, 0.90, 0.01)
+        ru_per_mm = w2.number_input("r_u per mm of ARI", 0.0, 0.01, 0.0012, 0.0001, format="%.4f",
+                                    help="Replaced by the fitted value when rain and piezometer data are both "
+                                         "present.")
+        ru_max = w3.slider("Maximum r_u", 0.0, 0.6, 0.40, 0.01)
+        z_tip = w4.number_input("Piezometer tip depth (m)", 1.0, 100.0, 10.0, 0.5)
+    st.markdown("**T6 Shift inspection.** Tick what the shift overman / geotech engineer saw today.")
+    seen = st.multiselect("Visual signs observed", [s_ for s_, _ in VISUAL_SIGNS], default=[],
+                          label_visibility="collapsed", placeholder="No signs observed")
+
+    def card(col, name, level, value, note=""):
+        col.markdown(f"<div style='border-radius:10px;padding:10px 12px;color:white;min-height:118px;"
+                     f"background:{TCOL[level]}'><div style='font-size:0.78rem;opacity:0.9'>{name}</div>"
+                     f"<div style='font-size:1.15rem;font-weight:700'>{level}</div>"
+                     f"<div style='font-size:0.86rem'>{value}</div>"
+                     f"<div style='font-size:0.74rem;opacity:0.9'>{note}</div></div>", unsafe_allow_html=True)
 
     def render(raw):
         d = process_series(raw, window_days=window, noise_floor=floor)
-        if "rainfall_mm" in d:
-            dtd = np.r_[0, np.diff(d.t_days)]
-            ari = np.zeros(len(d))
-            for i in range(1, len(d)):
-                ari[i] = ari[i - 1] * decay ** dtd[i] + d.rainfall_mm.iloc[i]
-            d["ARI_mm"] = ari
-            d["r_u_est"] = np.minimum(ru_max, ru_per_mm * ari)
-        if "r_u" in d:
-            d["r_u_est"] = np.maximum(d.get("r_u_est", 0), d["r_u"])
-        if "r_u_est" not in d:
-            d["r_u_est"] = 0.0
+        if len(d) > 12:
+            t_end = float(d.t_days.iloc[-1])
+            upto = st.slider("Replay: show the TARP as it stood on day", float(d.t_days.iloc[12]), t_end, t_end,
+                             0.25, help="Every calculation uses only the readings up to this day, as the mine "
+                                        "would have seen it then.")
+            d = d[d.t_days <= upto].reset_index(drop=True)
+        d = add_moving_averages(d, sma_d, lma_d)
+        has_rain = "rainfall_mm" in d
+        d["rain_24h"] = rolling_sum(d.t_days, d.rainfall_mm) if has_rain else np.nan
+        d["ARI_mm"] = antecedent_index(d.t_days, d.rainfall_mm, decay) if has_rain else 0.0
+        ru_src, k_fit = "none (dry)", None
+        if "piezo_head_m" in d:
+            d["r_u_piezo"] = ru_from_piezometer(d.piezo_head_m, z_tip, g)
+        elif "r_u" in d:
+            d["r_u_piezo"] = d["r_u"].astype(float)
+        if "r_u_piezo" in d:
+            d["r_u_est"] = d["r_u_piezo"].clip(0, ru_max)
+            ru_src = "piezometer"
+            if has_rain:
+                k_fit, r2_fit = calibrate_ru(d.ARI_mm, d.r_u_piezo)
+        elif has_rain:
+            d["r_u_est"] = np.minimum(ru_max, ru_per_mm * d.ARI_mm)
+            ru_src = "rainfall (ARI x coefficient)"
+        else:
+            d["r_u_est"] = ru_design
         X = pd.DataFrame(dict(c_kPa=c, phi_deg=phi, gamma_kNm3=g, r_u=d.r_u_est, **geom.cols()))
         d["FOS"] = model.predict(X, with_interval=False)["FOS"].values
+        des = model.predict(row(c, phi, g, ru_design, geom)).iloc[0]
         cur = d.iloc[-1]
+        onset = onset_of_acceleration(d, ratio, persist, floor, lma_d)
+        win = iv_window(d, onset, floor, fit_days=fit_d) if onset is not None else None
         v_info = classify_velocity(cur.velocity_mm_day)
-        f = inverse_velocity_forecast(d, int(last_n))
-        overall = worst(vel_to_tarp(v_info["level"]), det_level(cur.FOS))
-        if f and f["trend"] == "accelerating" and f["days_left"] < 3:
-            overall = "Red"
-        k = st.columns(4)
-        k[0].metric("Velocity now", f"{cur.velocity_mm_day:.1f} mm/day", v_info["level"], delta_color="off")
-        k[1].metric("Monitoring", v_info["frequency"], v_info["method"], delta_color="off")
-        k[2].metric("FOS now (with rain)", f"{cur.FOS:.2f}", f"r_u {cur.r_u_est:.2f}", delta_color="off")
-        if f and f["trend"] == "accelerating":
-            k[3].metric("Failure forecast (1/v)", f"{f['days_left']:.1f} days", f"fit R2 {f['r2']:.2f}",
-                        delta_color="off")
+        trig = {
+            "T1 Design FOS": fos_trigger(des.FOS, FOS_MIN, des.FOS_lo),
+            "T2 Live FOS": fos_trigger(cur.FOS, FOS_MIN),
+            "T3 Rainfall": rain_trigger(cur.rain_24h, rain_thr) if has_rain else "No data",
+            "T4 Velocity": VEL_MAP[v_info["level"]],
+            "T5 Acceleration": accel_trigger(onset, win, cur.velocity_mm_day, red_d, orange_d, red_v, 2.0),
+            "T6 Visual signs": visual_trigger(seen),
+        }
+        final, gov, note, missing = tarp_evaluate(trig, people)
+        act = next(a for a in ACTION_TABLE if a["Level"] == final)
+        st.markdown(f"<div class='tarp' style='background:{TCOL[final]}'><b>TARP level: {final}</b>"
+                    f"&nbsp; {act['Meaning']}<br>"
+                    f"Governing trigger: {', '.join(gov) if gov else 'none'}"
+                    f"{(' &middot; ' + note) if note else ''}<br>"
+                    f"<b style='font-size:1rem'>Action:</b> {act['Action']}<br>"
+                    f"<b style='font-size:1rem'>Responsible:</b> {act['Responsible']} &middot; "
+                    f"<b style='font-size:1rem'>Response:</b> {act['Response_time']}</div>",
+                    unsafe_allow_html=True)
+        cols = st.columns(6)
+        card(cols[0], "T1 Design FOS", trig["T1 Design FOS"], f"{des.FOS:.2f} ({des.FOS_lo:.2f}-{des.FOS_hi:.2f})",
+             f"min {FOS_MIN:.2f}, r_u {ru_design:.2f}")
+        card(cols[1], "T2 Live FOS", trig["T2 Live FOS"], f"{cur.FOS:.2f}", f"r_u {cur.r_u_est:.2f} from {ru_src}")
+        card(cols[2], "T3 Rainfall (24 h)", trig["T3 Rainfall"],
+             f"{cur.rain_24h:.0f} mm" if has_rain else "no gauge", f"ARI {cur.ARI_mm:.0f} mm" if has_rain else "")
+        card(cols[3], "T4 Velocity", trig["T4 Velocity"], f"{cur.velocity_mm_day:.1f} mm/day",
+             f"{v_info['level']}; survey {v_info['frequency'].lower()}")
+        if win:
+            t5v, t5n = (f"failure day {win['t_early']:.1f}-{win['t_late']:.1f}",
+                        f"{max(win['days_early'], 0):.1f}-{max(win['days_late'], 0):.1f} days left")
+        elif onset is not None:
+            t5v, t5n = f"accelerating since day {onset:.1f}", "no reliable 1/v fit yet"
         else:
-            k[3].metric("Inverse-velocity trend", "Not accelerating")
-        tarp_box(overall, "unified TARP (worse of movement class and FOS class; Red if failure is "
-                          "forecast within 3 days)", f"Movement: {v_info['response']}")
-        # velocity against bands
-        top = max(150.0, float(d.velocity_mm_day.max()) * 1.2)
-        bands = [0.05] + [b[0] for b in VELOCITY_TARP[:-1]] + [top]
-        fig = go.Figure()
-        for i, b in enumerate(VELOCITY_TARP):
-            fig.add_hrect(y0=bands[i], y1=bands[i + 1], fillcolor=b[2], opacity=0.16, line_width=0,
-                          annotation_text=f"{b[1]} ({b[4].lower()})", annotation_position="right",
-                          annotation_font_size=11)
-        fig.add_trace(go.Scatter(x=d.timestamp, y=d.velocity_mm_day.clip(lower=0.05), name="Velocity",
-                                 line=dict(color=INK, width=2)))
-        fig.update_layout(**PLOT, title="Slope velocity against the movement TARP bands", showlegend=False)
-        fig.update_layout(margin=dict(l=10, r=150, t=48, b=10))
-        fig.update_yaxes(title="mm/day (log scale)", type="log", range=[np.log10(0.05), np.log10(top)])
-        st.plotly_chart(fig, **FULL)
-        c1, c2 = st.columns(2)
-        dd = d.dropna(subset=["inv_velocity"])
-        fi = go.Figure(go.Scatter(x=dd.t_days, y=dd.inv_velocity, mode="markers",
-                                  marker=dict(color=TEAL, size=5), name="1/v"))
-        if f and f["trend"] == "accelerating":
-            t0 = float(dd.t_days.iloc[-min(int(last_n), len(dd))])
-            tt = np.linspace(t0, f["t_fail"], 50)
-            fi.add_trace(go.Scatter(x=tt, y=f["slope"] * tt + f["intercept"], name="Linear trend",
-                                    line=dict(color=SLIP, dash="dash")))
-            fi.add_vline(x=f["t_fail"], line_color=SLIP, line_dash="dot",
-                         annotation_text=f"forecast day {f['t_fail']:.1f}")
-        if t_true is not None:
-            fi.add_vline(x=t_true, line_color="#333", line_dash="dash", annotation_text=f"true day {t_true:.0f}",
-                         annotation_position="bottom right")
-        fi.update_yaxes(title="1/v (day/mm)", range=[0, float(np.nanpercentile(dd.inv_velocity, 98)) * 1.1])
-        c1.plotly_chart(fi.update_layout(**PLOT, title="Inverse velocity (Fukuzono 1985)")
-                        .update_xaxes(title="Days since start"), **FULL)
-        ff = go.Figure(go.Scatter(x=d.timestamp, y=d.FOS, line=dict(color=TEAL, width=3), name="FOS"))
-        ff.add_hline(y=FOS_MIN, line_dash="dot", line_color=TARP_COL["Green"],
-                     annotation_text=f"minimum {FOS_MIN:.2f}")
-        if "rainfall_mm" in d:
-            ff.add_trace(go.Bar(x=d.timestamp, y=d.rainfall_mm, name="Rain (mm)", yaxis="y2",
-                                marker_color="#7fa7c9", opacity=0.6))
-            ff.update_layout(yaxis2=dict(overlaying="y", side="right", title="Rain (mm)", showgrid=False))
-        c2.plotly_chart(ff.update_layout(**PLOT, title="FOS updated with rainfall")
-                        .update_yaxes(title="FOS"), **FULL)
-        if f and f["trend"] == "accelerating" and t_true is not None:
-            validated(f"On this synthetic tertiary-creep record the inverse-velocity forecast is day "
-                      f"{f['t_fail']:.1f} against the true failure on day {t_true:.0f} "
-                      f"(error {abs(f['t_fail'] - t_true):.1f} days).")
-        validated("Rain-to-r_u link (antecedent rainfall index x coefficient) is an assumption: fit the "
-                  "coefficient to piezometer readings after storms before relying on the FOS line.", "warn")
-        st.dataframe(pd.DataFrame(VELOCITY_TARP, columns=["Upper limit (mm/day)", "Level", "Colour",
-                                                          "Method", "Frequency", "Response"])
-                     .drop(columns="Colour"), **FULL)
-        st.caption("Velocity bands and monitoring frequencies: slope-movement table of the NIT Rourkela "
-                   "scientific study notes supplied with this project.")
+            t5v, t5n = "not accelerating", f"short avg {cur.v_sma:.1f}, long {cur.v_lma:.1f} mm/day"
+        card(cols[4], "T5 Acceleration", trig["T5 Acceleration"], t5v, t5n)
+        card(cols[5], "T6 Visual signs", trig["T6 Visual signs"], f"{len(seen)} sign(s) ticked",
+             "from shift inspection")
+        if missing:
+            st.caption("No data for: " + ", ".join(missing) + " (not counted; install the instrument).")
+
+        hist = level_history(d, FOS_MIN, rain_thr, ratio, persist, floor, red_d, orange_d, red_v, lma_d, fit_d)
+        hist["T1 Design FOS"] = trig["T1 Design FOS"]
+        hist["Overall"] = [tarp_evaluate({k: r[k] for k in TRIG_AUTO + ["T1 Design FOS"]}, people)[0]
+                           for _, r in hist.iterrows()]
+        tabs = st.tabs(["TARP history", "Movement", "Inverse velocity", "Water and FOS", "Action plan"])
+        with tabs[0]:
+            rows_ = ["T1 Design FOS"] + TRIG_AUTO + ["Overall"]
+            z = [[ORDER.index(x) if x in ORDER else np.nan for x in hist[r_]] for r_ in rows_]
+            cs = [[0.00, TCOL["Green"]], [0.25, TCOL["Green"]], [0.25, TCOL["Yellow"]], [0.50, TCOL["Yellow"]],
+                  [0.50, TCOL["Orange"]], [0.75, TCOL["Orange"]], [0.75, TCOL["Red"]], [1.00, TCOL["Red"]]]
+            hm = go.Figure(go.Heatmap(z=z, x=d.timestamp, y=rows_, zmin=-0.5, zmax=3.5, colorscale=cs,
+                                      showscale=False, hovertemplate="%{y}<br>%{x}<extra></extra>"))
+            hm.update_layout(**PLOT, title="Level of each trigger through the record (T6 is entered by hand)")
+            hm.update_layout(height=330)
+            hm.update_yaxes(autorange="reversed")
+            st.plotly_chart(hm, **FULL)
+            first = {L: first_time(hist, "Overall", L) for L in ["Yellow", "Orange", "Red"]}
+            vel_only = {L: first_time(hist, "T4 Velocity", L) for L in ["Orange", "Red"]}
+            m = st.columns(4)
+            for j, L in enumerate(["Yellow", "Orange", "Red"]):
+                m[j].metric(f"First {L}", "never" if first[L] is None else f"day {first[L]:.1f}",
+                            None if (first[L] is None or t_true is None) else
+                            f"{t_true - first[L]:.1f} days before failure", delta_color="off")
+            m[3].metric("Velocity bands alone: first Orange",
+                        "never" if vel_only["Orange"] is None else f"day {vel_only['Orange']:.1f}",
+                        "Red: never" if vel_only["Red"] is None else f"Red: day {vel_only['Red']:.1f}",
+                        delta_color="off")
+            st.caption("Each automatic trigger is re-evaluated at every reading using only the data up to that "
+                       "time, so the lead times are what the mine would have seen in real time.")
+        with tabs[1]:
+            top = max(150.0, float(d.velocity_mm_day.max()) * 1.2)
+            bands = [0.05] + [b[0] for b in VELOCITY_TARP[:-1]] + [top]
+            fig = go.Figure()
+            for j, b in enumerate(VELOCITY_TARP):
+                fig.add_hrect(y0=bands[j], y1=bands[j + 1], fillcolor=b[2], opacity=0.16, line_width=0,
+                              annotation_text=f"{b[1]} ({b[4].lower()})", annotation_position="right",
+                              annotation_font_size=11)
+            fig.add_trace(go.Scatter(x=d.timestamp, y=d.velocity_mm_day.clip(lower=0.05), name="Velocity",
+                                     line=dict(color="#9aa5a6", width=1)))
+            fig.add_trace(go.Scatter(x=d.timestamp, y=d.v_sma.clip(lower=0.05), name=f"Short avg ({sma_d:g} d)",
+                                     line=dict(color=INK, width=2)))
+            fig.add_trace(go.Scatter(x=d.timestamp, y=d.v_lma.clip(lower=0.05), name=f"Long avg ({lma_d:g} d)",
+                                     line=dict(color=TEAL, width=2, dash="dash")))
+            if onset is not None:
+                fig.add_vline(x=d.timestamp.iloc[int(np.argmin(abs(d.t_days - onset)))], line_color=SLIP,
+                              line_dash="dot", annotation_text="onset of acceleration")
+            fig.update_layout(**PLOT, title="Slope velocity against the movement bands")
+            fig.update_layout(margin=dict(l=10, r=150, t=48, b=10), legend=dict(orientation="h", y=-0.15))
+            fig.update_yaxes(title="mm/day (log scale)", type="log", range=[np.log10(0.05), np.log10(top)])
+            st.plotly_chart(fig, **FULL)
+            st.dataframe(pd.DataFrame(VELOCITY_TARP, columns=["Upper limit (mm/day)", "Level", "Colour",
+                                                              "Method", "Frequency", "Response"])
+                         .drop(columns="Colour").assign(TARP=lambda x: x.Level.map(VEL_MAP)), **FULL)
+            st.caption("Velocity bands and survey frequencies: slope-movement table of the NIT Rourkela "
+                       "scientific-study notes supplied with this project.")
+        with tabs[2]:
+            if onset is None:
+                st.info("No onset of acceleration: the short average of velocity is not held above the long "
+                        "average, so an inverse-velocity forecast is not meaningful yet.")
+            dd = d[(d.velocity_mm_day >= floor) & (d.t_days >= (onset if onset is not None else 0))]
+            fi = go.Figure(go.Scatter(x=dd.t_days, y=1 / dd.velocity_mm_day, mode="markers",
+                                      marker=dict(color="#9aa5a6", size=4), name="1/v raw"))
+            if win:
+                tt0 = max(onset, float(d.t_days.iloc[-1]) - fit_d)
+                colr = {"raw": "#6b7778", "SMA": INK, "LMA": TEAL}
+                for nm, ft in win["fits"].items():
+                    tt = np.linspace(tt0, ft["t_fail"], 40)
+                    fi.add_trace(go.Scatter(x=tt, y=ft["slope"] * tt + ft["intercept"],
+                                            name=f"{nm} fit: day {ft['t_fail']:.1f} (R2 {ft['r2']:.2f})",
+                                            line=dict(color=colr[nm], dash="dash")))
+                fi.add_vrect(x0=win["t_early"], x1=max(win["t_late"], win["t_early"] + 0.1),
+                             fillcolor=SLIP, opacity=0.18, line_width=0,
+                             annotation_text="forecast window", annotation_position="top left")
+            if t_true is not None:
+                fi.add_vline(x=t_true, line_color="#333", line_dash="dash", annotation_text=f"true day {t_true:.0f}",
+                             annotation_position="bottom right")
+            ymax = float(np.nanpercentile(1 / dd.velocity_mm_day, 98)) * 1.1 if len(dd) else 1
+            fi.update_yaxes(title="1/v (day/mm)", range=[0, ymax])
+            st.plotly_chart(fi.update_layout(**PLOT, title="Inverse velocity after the onset of acceleration")
+                            .update_xaxes(title="Days since start"), **FULL)
+            if win and t_true is not None:
+                validated(f"Synthetic record: forecast window day {win['t_early']:.1f}-{win['t_late']:.1f} "
+                          f"against the true failure on day {t_true:.0f}. Early forecasts are on the safe side.")
+        with tabs[3]:
+            ff = go.Figure(go.Scatter(x=d.timestamp, y=d.FOS, line=dict(color=TEAL, width=3), name="Live FOS"))
+            ff.add_hline(y=FOS_MIN, line_dash="dot", line_color=TARP_COL["Green"],
+                         annotation_text=f"DGMS minimum {FOS_MIN:.2f}")
+            ff.add_hline(y=1.0, line_dash="dot", line_color=SLIP, annotation_text="FOS 1.0")
+            if has_rain:
+                ff.add_trace(go.Bar(x=d.timestamp, y=d.rainfall_mm, name="Rain (mm)", yaxis="y2",
+                                    marker_color="#7fa7c9", opacity=0.6))
+                ff.update_layout(yaxis2=dict(overlaying="y", side="right", title="Rain (mm)", showgrid=False))
+            ff.update_layout(**PLOT, title="Live FOS from the AI model with today's pore pressure")
+            ff.update_layout(legend=dict(orientation="h", y=-0.15))
+            st.plotly_chart(ff.update_yaxes(title="FOS"), **FULL)
+            rr = go.Figure(go.Scatter(x=d.timestamp, y=d.r_u_est, name="r_u used", line=dict(color=INK, width=2)))
+            if "r_u_piezo" in d and has_rain and k_fit:
+                rr.add_trace(go.Scatter(x=d.timestamp, y=np.minimum(ru_max, k_fit * d.ARI_mm),
+                                        name="r_u from rain (fitted)", line=dict(color="#7fa7c9", dash="dash")))
+            rr.update_layout(**PLOT, title="Pore-pressure ratio r_u")
+            rr.update_layout(height=300, legend=dict(orientation="h", y=-0.2))
+            st.plotly_chart(rr, **FULL)
+            if k_fit:
+                validated(f"Rain-to-r_u link learned from this record: r_u = {k_fit:.5f} x ARI "
+                          f"(R2 {r2_fit:.2f}). Use it for dumps that have a rain gauge but no piezometer.")
+            else:
+                validated("r_u from rainfall uses an assumed coefficient. Fit it to piezometer readings "
+                          "after storms before relying on the live FOS.", "warn")
+        with tabs[4]:
+            st.dataframe(pd.DataFrame(ACTION_TABLE).rename(columns={"Response_time": "Response time"}),
+                         hide_index=True, **FULL)
+            st.dataframe(pd.DataFrame([
+                ["T1 Design FOS", "AI model (Bishop surrogate + field correction)", "near minimum or 90 % range "
+                 "below it", "below DGMS minimum", "below 1.0"],
+                ["T2 Live FOS", "AI model with today's r_u", "within 0.05 of minimum", "below DGMS minimum",
+                 "below 1.0"],
+                ["T3 Rainfall (24 h)", "Rain gauge / IMD / GPM", f">= {rain_thr[0]:g} mm", f">= {rain_thr[1]:g} mm",
+                 f">= {rain_thr[2]:g} mm"],
+                ["T4 Velocity", "Prism / total station / radar", "5-10 mm/day", "10-50 mm/day", "> 50 mm/day"],
+                ["T5 Acceleration", "Moving averages + inverse velocity", "onset of acceleration",
+                 f"failure within {orange_d:g} days and v >= 2 mm/day",
+                 f"within {red_d:g} days and v >= {red_v:g} mm/day"],
+                ["T6 Visual signs", "Shift inspection", "new cracks, settlement, seepage",
+                 "widening cracks, toe bulging, muddy outflow", "scarp, visible mass movement"],
+            ], columns=["Trigger", "Source", "Yellow", "Orange", "Red"]), hide_index=True, **FULL)
+            st.caption("Rule: the worst trigger governs; Yellow and Orange are raised one level when people, haul "
+                       "roads or structures are in the run-out zone (design FOS and rainfall alone stop at Orange). DGMS minimum FOS from the Reg. 106(2) "
+                       "scientific-study circular, para 3.2; para 4.1 asks the study to set TARP trigger points. "
+                       "Responsibilities and response times are proposed for the mine's Safety Management Plan.")
+            st.download_button("Download today's TARP record (CSV)",
+                               pd.DataFrame([dict(time=str(cur.timestamp), level=final,
+                                                  governing="; ".join(gov), **trig)]).to_csv(index=False),
+                               "tarp_record.csv", "text/csv")
         st.session_state.last["monitoring"] = dict(velocity=float(cur.velocity_mm_day),
-                                                   fos=float(cur.FOS), level=overall)
+                                                   fos=float(cur.FOS), level=final)
 
     if src == "Live CSV URL" and url:
         every = st.number_input("Refresh every (seconds)", 30, 3600, 300)

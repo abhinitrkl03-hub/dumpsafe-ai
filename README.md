@@ -240,7 +240,7 @@ training data did not need re-solving. Re-run: `python scripts/validate_slide2.p
 ## Pages
 
 Overview · Data and sources · Methods and equations · Validation · Model lab · Predict and TARP (with a
-simple moisture and water section) · Monte Carlo reliability · Design envelope · Real-time monitoring.
+simple moisture and water section) · Monte Carlo reliability · Design envelope · Multi-parameter TARP (six triggers: design FOS, live FOS with water, rainfall, velocity, acceleration / inverse velocity, visual signs).
 The prediction interval is fixed at 90 % coverage.
 
 ## Deploy on a server
@@ -267,7 +267,7 @@ To run on your own machine for testing: `pip install -r requirements.txt`, then 
   with site piezometer and shear-test data. Softening is off by default.
 - TARP thresholds are editable defaults, not regulatory limits. Use the values in your mine's approved
   design or DGMS permission.
-- The demo monitoring feed is synthetic and labelled as such in the app.
+- The two demo monitoring feeds (creep to failure, monsoon storm) are synthetic and labelled as such in the app.
 
 ## References
 
