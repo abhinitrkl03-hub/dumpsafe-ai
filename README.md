@@ -1,8 +1,12 @@
-# DumpSafe AI: sim-to-real FOS prediction for OB dump slopes
+# DumpSafe AI: TARP for overburden dump slopes in Indian coal mines
 
-A Streamlit platform that predicts the factor of safety (FOS) of overburden dumps in
-Indian opencast mines from a small set of real cases, with uncertainty, Monte Carlo
-reliability, a physics-based moisture model and a real-time TARP.
+A Streamlit platform that develops a **Trigger Action Response Plan (TARP)** for overburden dumps
+of Indian opencast coal mines. Six triggers (design FOS, live FOS with pore pressure, rainfall,
+slope velocity, acceleration / inverse-velocity time to failure, visual signs) are combined into one
+Green / Yellow / Orange / Red level with actions, responsibilities and response times. An AI FOS
+engine (neural-network ensemble + Gaussian-process field correction) supplies the two FOS triggers;
+thresholds are traced to DGMS, the NIT Rourkela scientific-study notes, IMD and back-analysis of
+reported failures.
 
 ## Scope: coal-mine overburden dumps, designed to DGMS rules
 
@@ -237,11 +241,22 @@ benches critical (6 m bench width: 1.476 / 1.604 / 1.880; r_u 0.25: 1.476 / 1.50
 The Slide2-procedure FOS agrees with the training labels within 0.27 % SD on 60 random rows (V13), so the
 training data did not need re-solving. Re-run: `python scripts/validate_slide2.py`.
 
-## Pages
+## Dashboard
 
-Overview · Data and sources · Methods and equations · Validation · Model lab · Predict and TARP (with a
-simple moisture and water section) · Monte Carlo reliability · Design envelope · Multi-parameter TARP (six triggers: design FOS, live FOS with water, rainfall, velocity, acceleration / inverse velocity, visual signs).
-The prediction interval is fixed at 90 % coverage.
+One page, six tabs, one TARP level at the top with six trigger cards:
+1 Design (T1: AI design FOS, height check) · 2 Water & rain (T2 live FOS, T3 rain; the AI finds the
+dump's own pore-pressure, piezometer-head and rain limits) · 3 Movement (T4 velocity, T5 acceleration and
+time to failure, warning time) · 4 Field signs (T6) · 5 Response plan (triggers, actions, who, when,
+download) · 6 Why this TARP (Indian failures, earlier methods, back-analysis, sources, references).
+TARP engine: `core/tarp.py`; monitoring: `core/monitoring.py`; back-analysis: `core/backanalysis.py`;
+failure history: `data/tarp/`.
+
+## Fast start: pre-trained FOS engine
+
+The FOS engine is trained once with `python scripts/pretrain.py` and saved in `models/`
+(two files, about 2.5 MB each). The app loads them in about a second. It retrains only if
+`data/real_cases.csv` or `data/physics_dataset.csv` change, or the server's scikit-learn
+version differs (it is pinned in requirements.txt). Re-run the script after changing either.
 
 ## Deploy on a server
 

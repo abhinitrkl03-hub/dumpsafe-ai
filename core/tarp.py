@@ -78,9 +78,25 @@ def ru_from_piezometer(head_m, depth_m, gamma=18.6, gamma_w=9.81):
     return np.clip(gamma_w * np.asarray(head_m, float) / (gamma * depth_m), 0, 1)
 
 
+def ari_trigger(ari, thresholds):
+    """Antecedent rainfall index trigger; thresholds (Yellow, Orange, Red) in mm, or None
+    until they are calibrated by back-analysis of past failures."""
+    if thresholds is None or ari is None or not np.isfinite(ari):
+        return "Green"
+    y, o, r = thresholds
+    return "Red" if ari >= r else "Orange" if ari >= o else "Yellow" if ari >= y else "Green"
+
+
 # ------------------------------------------------------------------ T4 velocity
 VEL_MAP = {"Normal": "Green", "Watch": "Green", "Caution": "Yellow", "Alert": "Orange",
            "Alarm": "Red", "Stop work": "Red"}
+# Yellow / Orange / Red from (mm/day): Caution, Alert and Alarm bands of the NIT Rourkela notes
+VEL_DEFAULT = (5.0, 10.0, 50.0)
+
+
+def vel_trigger(v, thresholds=VEL_DEFAULT):
+    y, o, r = thresholds
+    return "Red" if v >= r else "Orange" if v >= o else "Yellow" if v >= y else "Green"
 
 
 # ------------------------------------------------------------------ T5 acceleration
@@ -171,7 +187,8 @@ def evaluate(triggers: dict, people_below=False):
 # ------------------------------------------------------------------ history (for lead time)
 def level_history(d: pd.DataFrame, fos_min, rain_thr=RAIN_DEFAULT, ratio=1.3,
                   persist_days=2.0, noise_floor=0.2, red_days=3.0, orange_days=7.0,
-                  red_min_v=10.0, long_days=5.0, fit_days=5.0, orange_min_v=2.0):
+                  red_min_v=10.0, long_days=5.0, fit_days=5.0, orange_min_v=2.0,
+                  vel_thr=VEL_DEFAULT, ari_thr=None):
     """Re-runs the automatic triggers (T2-T5) at every reading as if it were 'now', so the
     page can show when each trigger would have fired and the warning lead time."""
     from core.monitoring import onset_of_acceleration, iv_window
@@ -181,9 +198,10 @@ def level_history(d: pd.DataFrame, fos_min, rain_thr=RAIN_DEFAULT, ratio=1.3,
         row = sub.iloc[-1]
         lv = dict(t_days=row.t_days)
         lv["T2 Live FOS"] = fos_trigger(row.get("FOS", np.nan), fos_min)
-        lv["T3 Rainfall"] = rain_trigger(row.get("rain_24h", np.nan), rain_thr) \
-            if "rain_24h" in d else "No data"
-        lv["T4 Velocity"] = VEL_MAP[row.level]
+        lv["T3 Rainfall"] = worst(rain_trigger(row.get("rain_24h", np.nan), rain_thr),
+                                  ari_trigger(row.get("ARI_mm", np.nan), ari_thr)) \
+            if ("rain_24h" in d and np.isfinite(row.get("rain_24h", np.nan))) else "No data"
+        lv["T4 Velocity"] = vel_trigger(row.velocity_mm_day, vel_thr)
         if i >= 8:
             on = onset_of_acceleration(sub, ratio, persist_days, noise_floor, long_days)
             w = iv_window(sub, on, noise_floor, fit_days=fit_days) if on is not None else None
