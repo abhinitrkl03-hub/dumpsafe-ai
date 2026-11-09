@@ -1,26 +1,22 @@
-"""Multi-parameter TARP (Trigger Action Response Plan) for OB dump slopes.
+"""Five-trigger TARP (Trigger Action Response Plan) for coal-mine OB dumps.
 
-Six triggers are each given a level (Green / Yellow / Orange / Red); the worst one
-governs, and the level is raised one step when people, haul roads or structures lie
-in the run-out zone below the dump (design FOS and rainfall, being causes rather than
-evidence of movement, can be raised to Orange at most).
+T1 FOS           - AI FOS of the dump with today's water condition (dry, piezometer, or r_u)
+T2 Rainfall      - rain in the last 24 h and in the last 15 days
+T3 Velocity      - movement rate from prisms / GNSS / radar / crack meters
+T4 Acceleration  - speeding up (velocity ratio) and inverse-velocity time to failure
+T5 Field signs   - cracks, settlement, bulging, seepage seen during shift inspection
 
-T1  Design FOS   - AI-predicted FOS of the design (dry / design r_u), DGMS para 3.2
-T2  Live FOS     - the same model re-run with today's pore pressure (piezometer or rain)
-T3  Rainfall     - 24 h rainfall, IMD intensity classes (site calibration needed)
-T4  Velocity     - slope-movement bands of the NIT Rourkela scientific-study notes
-T5  Acceleration - onset of acceleration and inverse-velocity window (Carla et al. 2017)
-T6  Visual signs - shift inspection checklist (cracks, bulging, seepage, ...)
-
-The responsibilities and response times are a PROPOSAL to be adopted through the
-mine's Safety Management Plan; they are not quoted from a DGMS circular.
+Every threshold is taken from DGMS, the NIT Rourkela scientific-study notes, IMD, or from
+FOS / movement / rainfall recorded before real failures (see evidence.py). The worst
+trigger sets the level; it is raised one step when people, haul roads or structures are in
+the run-out zone (rainfall alone stops at Orange).
 """
 from __future__ import annotations
-import numpy as np, pandas as pd
+import numpy as np
 
 ORDER = ["Green", "Yellow", "Orange", "Red"]
-COL = {"Green": "#2e7d4f", "Yellow": "#d8a31a", "Orange": "#d9731f", "Red": "#b03a2e",
-       "No data": "#8a9597"}
+COL = {"Green": "#2e7d4f", "Yellow": "#d8a31a", "Orange": "#d9731f", "Red": "#b03a2e", "No data": "#8a9597"}
+NAMES = ["T1 FOS", "T2 Rainfall", "T3 Velocity", "T4 Acceleration", "T5 Field signs"]
 
 
 def worst(*levels):
@@ -32,102 +28,79 @@ def step_up(level):
     return ORDER[min(ORDER.index(level) + 1, 3)]
 
 
-# ------------------------------------------------------------------ T1 / T2 FOS
-def fos_trigger(fos, fos_min, fos_lo=None):
-    """Red: FOS < 1.0 (failure predicted). Orange: below the DGMS minimum.
-    Yellow: within 0.05 of the minimum, or the lower end of the 90 % range below it."""
+# ------------------------------------------------------------------ T1 FOS
+RED_FOS = 1.10      # every back-analysed failed dump had FOS 0.72-1.07 at failure (evidence.py)
+
+
+def fos_bands(fos_min):
+    """(Yellow-from, Orange-from, Red-from) as FOS values: Green >= DGMS minimum; Yellow down
+    to 1.30 for permanent dumps (still meets the minimum for working dumps) or 1.20 for
+    working dumps; Orange down to 1.10; Red below 1.10, the range of failed dumps."""
+    return (fos_min, 1.30 if fos_min > 1.30 else 1.20, RED_FOS)
+
+
+def fos_trigger(fos, fos_min):
     if fos is None or not np.isfinite(fos):
         return "No data"
-    if fos < 1.0:
-        return "Red"
-    if fos < fos_min:
-        return "Orange"
-    if fos < fos_min + 0.05 or (fos_lo is not None and fos_lo < fos_min):
-        return "Yellow"
-    return "Green"
+    g, y, o = fos_bands(fos_min)
+    return "Green" if fos >= g else "Yellow" if fos >= y else "Orange" if fos >= o else "Red"
 
 
-# ------------------------------------------------------------------ T3 rainfall
-# IMD daily rainfall classes: heavy 64.5-115.5, very heavy 115.6-204.4,
-# extremely heavy >= 204.5 mm in 24 h.
-RAIN_DEFAULT = (64.5, 115.6, 204.5)
+# ------------------------------------------------------------------ T2 rainfall
+RAIN_24H = (25.0, 64.5, 115.6)   # Bingham Canyon trigger; IMD heavy; IMD very heavy (mm in 24 h)
+RAIN_15D_ORANGE = 350.0          # East Kalimantan dump: 353.5 mm in 17 days before failure
 
 
-def rain_trigger(rain_24h, thresholds=RAIN_DEFAULT):
+def rain_trigger(rain_24h, rain_15d=0.0):
     if rain_24h is None or not np.isfinite(rain_24h):
         return "No data"
-    y, o, r = thresholds
-    return "Red" if rain_24h >= r else "Orange" if rain_24h >= o else "Yellow" if rain_24h >= y else "Green"
-
-
-def rolling_sum(t_days, x, width=1.0):
-    t, x = np.asarray(t_days, float), np.nan_to_num(np.asarray(x, float))
-    return np.array([x[(t > ti - width) & (t <= ti)].sum() for ti in t])
-
-
-def antecedent_index(t_days, rain, decay=0.90):
-    t, r = np.asarray(t_days, float), np.nan_to_num(np.asarray(rain, float))
-    ari = np.zeros(len(t))
-    for i in range(1, len(t)):
-        ari[i] = ari[i - 1] * decay ** (t[i] - t[i - 1]) + r[i]
-    return ari
+    y, o, r = RAIN_24H
+    lv = "Red" if rain_24h >= r else "Orange" if rain_24h >= o else "Yellow" if rain_24h >= y else "Green"
+    if rain_15d is not None and rain_15d >= RAIN_15D_ORANGE:
+        lv = worst(lv, "Orange")
+    return lv
 
 
 def ru_from_piezometer(head_m, depth_m, gamma=18.6, gamma_w=9.81):
     """r_u = u / (gamma z) with u = gamma_w h (Bishop & Morgenstern 1960)."""
-    return np.clip(gamma_w * np.asarray(head_m, float) / (gamma * depth_m), 0, 1)
+    return float(np.clip(gamma_w * head_m / (gamma * depth_m), 0, 1))
 
 
-def ari_trigger(ari, thresholds):
-    """Antecedent rainfall index trigger; thresholds (Yellow, Orange, Red) in mm, or None
-    until they are calibrated by back-analysis of past failures."""
-    if thresholds is None or ari is None or not np.isfinite(ari):
-        return "Green"
-    y, o, r = thresholds
-    return "Red" if ari >= r else "Orange" if ari >= o else "Yellow" if ari >= y else "Green"
+# ------------------------------------------------------------------ T3 velocity
+VEL = (5.0, 10.0, 50.0)   # Caution / Alert / Alarm bands of the NIT Rourkela notes (mm/day)
 
 
-# ------------------------------------------------------------------ T4 velocity
-VEL_MAP = {"Normal": "Green", "Watch": "Green", "Caution": "Yellow", "Alert": "Orange",
-           "Alarm": "Red", "Stop work": "Red"}
-# Yellow / Orange / Red from (mm/day): Caution, Alert and Alarm bands of the NIT Rourkela notes
-VEL_DEFAULT = (5.0, 10.0, 50.0)
-
-
-def vel_trigger(v, thresholds=VEL_DEFAULT):
-    y, o, r = thresholds
+def vel_trigger(v):
+    if v is None or not np.isfinite(v):
+        return "No data"
+    y, o, r = VEL
     return "Red" if v >= r else "Orange" if v >= o else "Yellow" if v >= y else "Green"
 
 
-# ------------------------------------------------------------------ T5 acceleration
-def accel_trigger(onset, window, velocity=None, red_days=3.0, orange_days=7.0, red_min_v=10.0,
-                  orange_min_v=2.0):
-    """Yellow once acceleration has started (SMA above LMA); Orange when the earliest
-    inverse-velocity forecast is within `orange_days` AND the velocity is above the
-    Normal band (`orange_min_v`); Red when it is within `red_days` AND the velocity is at
-    least `red_min_v` mm/day (Alert band). The velocity conditions stop a noisy 1/v fit
-    on a barely moving slope from raising the level on its own."""
-    v_ok = (lambda lim: velocity is None or velocity >= lim)
-    if onset is None:
+# ------------------------------------------------------------------ T4 acceleration
+VR_ORANGE = 1.3       # velocity ratio trigger at Bingham Canyon (1.3-1.5; Bakken et al. 2020)
+IV_RED_DAYS = 2.0     # inverse velocity predicts failure within 2 days (Bingham: 1-3 days, 36 h, 2 days)
+
+
+def accel_trigger(t_onset, vr, window):
+    if t_onset is None:
         return "Green"
-    if window is None:
-        return "Yellow"
-    if window["days_early"] < red_days and v_ok(red_min_v):
+    if window is not None and window["days_early"] <= IV_RED_DAYS:
         return "Red"
-    if window["days_early"] < orange_days and v_ok(orange_min_v):
+    if vr is not None and np.isfinite(vr) and vr >= VR_ORANGE:
         return "Orange"
     return "Yellow"
 
 
-# ------------------------------------------------------------------ T6 visual
+# ------------------------------------------------------------------ T5 field signs
 VISUAL_SIGNS = [
     ("New tension cracks on the crest or bench", "Yellow"),
     ("Settlement / sagging of the crest", "Yellow"),
     ("Seepage or wet patches at the toe or bench face", "Yellow"),
     ("Cracks widening or lengthening since the last shift", "Orange"),
     ("Bulging or heave at the toe", "Orange"),
-    ("Muddy water or soft-soil outflow at the toe", "Orange"),
-    ("Scarp formed / step in the crest, debris falling continuously", "Red"),
+    ("Water ponding behind a rib, berm or toe", "Orange"),
+    ("Scarp formed / step in the crest, rocks sliding off the face", "Red"),
     ("Visible movement of the dump mass or toe pushing onto the haul road", "Red"),
 ]
 
@@ -160,16 +133,11 @@ ACTION_TABLE = [
          Responsible="Mine Manager; Agent / owner",
          Response_time="Immediately"),
 ]
-
-
-# T1 (design) and T3 (rain) are causes, not evidence of movement: with the consequence
-# step they can raise the level to Orange at most. Red (evacuation) needs a direct trigger.
-INDIRECT = ("T1 Design FOS", "T3 Rainfall")
+INDIRECT = ("T2 Rainfall",)    # a cause, not evidence of movement: the consequence step stops at Orange
 
 
 def evaluate(triggers: dict, people_below=False):
-    """triggers: {name: level or 'No data'}.
-    Returns (final level, governing triggers, note, triggers without data)."""
+    """Returns (final level, governing triggers, note, triggers without data)."""
     valid = {k: v for k, v in triggers.items() if v in ORDER}
     base = worst(*valid.values())
     gov = [k for k, v in valid.items() if v == base] if base != "Green" else []
@@ -184,38 +152,74 @@ def evaluate(triggers: dict, people_below=False):
     return final, gov, note, missing
 
 
-# ------------------------------------------------------------------ history (for lead time)
-def level_history(d: pd.DataFrame, fos_min, rain_thr=RAIN_DEFAULT, ratio=1.3,
-                  persist_days=2.0, noise_floor=0.2, red_days=3.0, orange_days=7.0,
-                  red_min_v=10.0, long_days=5.0, fit_days=5.0, orange_min_v=2.0,
-                  vel_thr=VEL_DEFAULT, ari_thr=None):
-    """Re-runs the automatic triggers (T2-T5) at every reading as if it were 'now', so the
-    page can show when each trigger would have fired and the warning lead time."""
-    from core.monitoring import onset_of_acceleration, iv_window
-    out = []
-    for i in range(len(d)):
-        sub = d.iloc[: i + 1]
-        row = sub.iloc[-1]
-        lv = dict(t_days=row.t_days)
-        lv["T2 Live FOS"] = fos_trigger(row.get("FOS", np.nan), fos_min)
-        lv["T3 Rainfall"] = worst(rain_trigger(row.get("rain_24h", np.nan), rain_thr),
-                                  ari_trigger(row.get("ARI_mm", np.nan), ari_thr)) \
-            if ("rain_24h" in d and np.isfinite(row.get("rain_24h", np.nan))) else "No data"
-        lv["T4 Velocity"] = vel_trigger(row.velocity_mm_day, vel_thr)
-        if i >= 8:
-            on = onset_of_acceleration(sub, ratio, persist_days, noise_floor, long_days)
-            w = iv_window(sub, on, noise_floor, fit_days=fit_days) if on is not None else None
-        else:
-            on, w = None, None
-        lv["T5 Acceleration"] = accel_trigger(on, w, row.velocity_mm_day, red_days, orange_days,
-                                              red_min_v, orange_min_v)
-        lv["Overall"] = worst(lv["T2 Live FOS"], lv["T3 Rainfall"], lv["T4 Velocity"],
-                              lv["T5 Acceleration"])
-        out.append(lv)
-    return pd.DataFrame(out)
-
-
-def first_time(hist, col, level):
-    """First time (days) a column reaches `level` or worse."""
-    k = hist[col].map(lambda x: ORDER.index(x) if x in ORDER else -1) >= ORDER.index(level)
-    return float(hist.t_days[k].iloc[0]) if k.any() else None
+# ------------------------------------------------------------------ trigger-specific responses
+# (action, responsible, response time, basis) for every trigger and level
+TRIGGER_ACTIONS = {
+    "T1 FOS": {
+        "Green": ("Re-run the FOS after every survey, geometry change or piezometer reading.",
+                  "Slope-stability engineer", "Routine", "DGMS para 3.2"),
+        "Yellow": ("Do not raise this dump further. Revise the design (flatter decks, wider benches or lower "
+                   "height) until FOS is back above the DGMS minimum; read piezometers weekly; weekly prism survey.",
+                   "Slope-stability engineer; Mine Manager approves", "Before the next dumping cycle",
+                   "DGMS para 3.2 (minimum 1.50 / 1.30); Singareni and East Kalimantan failed from 1.45-1.49"),
+        "Orange": ("Stop dumping on this dump. Unload the crest or lower the top deck; drain the dump (toe drains, "
+                   "horizontal drain holes); keep people and vehicles away from the toe; daily survey.",
+                   "Mine Manager (decision); Assistant Manager (execution)", "Same shift",
+                   "DGMS Bharatpur alert 2019 (drainage, drain holes, people away from the toe)"),
+        "Red": ("Stop all work in the run-out zone and evacuate it; barricade; unloading or a toe buttress only "
+                "from the safe side after geotechnical clearance; report to the Agent and DGMS.",
+                "Mine Manager; Agent", "Immediately", "Failed dumps had FOS 0.72-1.07 (WCL, Jayant, East Kalimantan)"),
+    },
+    "T2 Rainfall": {
+        "Green": ("Read the rain gauge daily; keep drains and berm slopes clear before the monsoon.",
+                  "Shift overman", "Daily", "DGMS Bharatpur alert 2019 (pre-monsoon inspection)"),
+        "Yellow": ("Inspect drains, berms and the toe after the rain; pump out any ponded water; read piezometers "
+                   "and re-run T1 with the new pore pressure; no work directly below the dump during heavy rain.",
+                   "Shift overman; slope-stability engineer", "Same day",
+                   "Bingham Canyon TARP (25 mm in 24 h; no mining below instabilities in heavy rain)"),
+        "Orange": ("Suspend dumping and all work below the dump during the rain and for 24 h after it; pump out "
+                   "ponded water; daily survey; re-run T1 with piezometer readings.",
+                   "Assistant Manager", "Same shift", "Basundhara 2013 and Bharatpur 2019 failed in heavy / monsoon rain"),
+        "Red": ("Withdraw people and machines from the toe and run-out zone until the rain stops and an inspection "
+                "clears the dump; continuous watch from a safe point.",
+                "Mine Manager", "Immediately", "IMD very heavy rain; DGMS: most dumps in the region failed in the rainy season"),
+    },
+    "T3 Velocity": {
+        "Green": ("Prism survey monthly (below 2 mm/day) or weekly (2-5 mm/day).", "Surveyor", "Routine",
+                  "NIT Rourkela notes (Normal, Watch)"),
+        "Yellow": ("Survey once in 2 days; walk the crest and toe for cracks; look for the cause (rain, new dumping, "
+                   "toe cutting).", "Surveyor; slope-stability engineer", "Within 24 h", "NIT Rourkela notes (Caution)"),
+        "Orange": ("Daily survey plus crack meters; restrict access below the dump toe; stop dumping on the moving "
+                   "deck; bring in radar or GNSS if available.", "Assistant Manager; slope-stability engineer",
+                   "Same shift", "NIT Rourkela notes (Alert); Bingham Canyon (pause mining, add radar)"),
+        "Red": ("Evacuate the influence zone and stop all work; continuous radar or GNSS from a safe point.",
+                "Mine Manager", "Immediately",
+                "NIT Rourkela notes (Alarm, Stop work); 9 real collapses were above 60 mm/day 48 h before"),
+    },
+    "T4 Acceleration": {
+        "Green": ("Keep the regular survey interval.", "Surveyor", "Routine", "-"),
+        "Yellow": ("Shorten the reading interval (prisms daily, radar continuous); stop blasting and toe cutting "
+                   "near the dump; find what is driving the speed-up.", "Slope-stability engineer", "Within 24 h",
+                   "Bingham Canyon, Lark Quartzite (pause mining and blasting below the instability)"),
+        "Orange": ("Isolate the area below the dump: no people or machines below the toe; prepare the evacuation "
+                   "plan and radio alert; continuous monitoring.", "Mine Manager", "Same shift",
+                   "Bingham Canyon, Jordan slide (velocity ratio above 1.3: isolate below)"),
+        "Red": ("Remove all people and machines from the run-out zone; barricade; watch from a safe point until "
+                "movement stops.", "Mine Manager; Agent", "Immediately",
+                "Bingham Canyon (failure forecast within 1-3 days: remove personnel)"),
+    },
+    "T5 Field signs": {
+        "Green": ("Inspect crest, benches and toe every shift and record it.", "Shift overman", "Every shift",
+                  "Rajmahal and Juna Kunada cracks were first seen by people on the dump"),
+        "Yellow": ("Peg, photograph and measure the cracks every shift; seal open cracks so rain cannot enter; add "
+                   "prisms at the cracked area; check drains.", "Shift overman; slope-stability engineer",
+                   "Same shift", "DGMS Bharatpur alert 2019 (fill open cracks); Rajmahal (cracks for months)"),
+        "Orange": ("Stop dumping on that deck; move machines away from the toe and crest; drain ponded water; "
+                   "install crack meters; daily survey.", "Assistant Manager", "Same shift",
+                   "Juna Kunada 2017 (excavators moved when cracks widened); Bharatpur 2019 (water behind a rib)"),
+        "Red": ("The shift in-charge orders everyone out at once by radio, without waiting for approval; stop all "
+                "work; barricade; no re-entry until the Manager and geotechnical engineer clear it.",
+                "Shift in-charge (orders withdrawal); Mine Manager", "Immediately",
+                "Juna Kunada: radios, all 30 escaped. Rajmahal: stop order not enforced, 23 died"),
+    },
+}

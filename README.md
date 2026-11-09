@@ -243,13 +243,12 @@ training data did not need re-solving. Re-run: `python scripts/validate_slide2.p
 
 ## Dashboard
 
-One page, six tabs, one TARP level at the top with six trigger cards:
-1 Design (T1: AI design FOS, height check) · 2 Water & rain (T2 live FOS, T3 rain; the AI finds the
-dump's own pore-pressure, piezometer-head and rain limits) · 3 Movement (T4 velocity, T5 acceleration and
-time to failure, warning time) · 4 Field signs (T6) · 5 Response plan (triggers, actions, who, when,
-download) · 6 Why this TARP (Indian failures, earlier methods, back-analysis, sources, references).
-TARP engine: `core/tarp.py`; monitoring: `core/monitoring.py`; back-analysis: `core/backanalysis.py`;
-failure history: `data/tarp/`.
+One page. Top: the TARP level (Green / Yellow / Orange / Red) with the whole-mine action, who and when,
+and five trigger cards. Tabs: T1 FOS (AI FOS with today's water) · T2 Rainfall · T3 Velocity (upload prism /
+GNSS / radar CSV or enter readings) · T4 Acceleration · T5 Field signs · Response plan (download).
+Each trigger tab shows its value, its zone and its response (what to do, who, when).
+TARP rules and responses: `core/tarp.py`; movement analysis: `core/monitoring.py`; sources behind every limit
+(not shown on the site): `evidence.py` and `data/tarp/failure_history_india.csv`.
 
 ## Fast start: pre-trained FOS engine
 
@@ -282,7 +281,6 @@ To run on your own machine for testing: `pip install -r requirements.txt`, then 
   with site piezometer and shear-test data. Softening is off by default.
 - TARP thresholds are editable defaults, not regulatory limits. Use the values in your mine's approved
   design or DGMS permission.
-- The two demo monitoring feeds (creep to failure, monsoon storm) are synthetic and labelled as such in the app.
 
 ## References
 
